@@ -15,7 +15,7 @@
 
 Bot used miniflux API for adding subscriptions.
 
-```
+```docker-compose
 volumes:
   miniflux-db:
   
@@ -71,15 +71,15 @@ https://github.com/vvzvlad/pyrogram-bridge
 https://github.com/DIYgod/RSSHub  
 
 
-You need get rss subscription url from RSSHub and set it in env variable RSS_BRIDGE_URL  
-E.g. https://rsshub.example.com/telegram/channel/channel_name or https://pgbridge.example.com/rss/channel_name(need non-bot tg account!)
+You need get rss subscription url from RSSHub and set it in env variable RSS_BRIDGE_URL    
+E.g. https://rsshub.example.com/telegram/channel/channel_name or https://pgbridge.example.com/rss/channel_name(need non-bot tg account!)  
 https://rsshub.example.com/telegram/channel/channel_name need response valid rss-xml feed  
 Use in RSS_BRIDGE_URL url without channel_name: https://rsshub.example.com/telegram/channel/  
 
 
 ## Install bot
 
-```
+```docker-compose
 services:
     tg2rss-subscription-bot:
     image: ghcr.io/vvzvlad/tg2rss-subscription-bot:latest
