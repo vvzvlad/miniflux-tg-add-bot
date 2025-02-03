@@ -73,7 +73,9 @@ https://github.com/DIYgod/RSSHub
 
 You need get rss subscription url from RSSHub and set it in env variable RSS_BRIDGE_URL    
 E.g. https://rsshub.example.com/telegram/channel/channel_name or https://pgbridge.example.com/rss/channel_name(need non-bot tg account!)  
+
 https://rsshub.example.com/telegram/channel/channel_name need response valid rss-xml feed  
+
 Use in RSS_BRIDGE_URL url without channel_name: https://rsshub.example.com/telegram/channel/  
 
 
@@ -96,7 +98,7 @@ services:
       ACCEPT_CHANNELS_WITOUT_USERNAME: true
     labels:
       com.centurylinklabs.watchtower.enable: "true"
-
+```
 
 ADMIN env variable is username of one user who can add subscriptions
 
