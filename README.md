@@ -2,18 +2,14 @@
 
 ## Create bot and get token
 
-1)Go to https://t.me/BotFather
-
-2)Create new bot
-
-3)Get token
-
-4)Set token env TELEGRAM_TOKEN
-
+1)Go to https://t.me/BotFather  
+2)Create new bot  
+3)Get token  
+4)Set token env TELEGRAM_TOKEN  
 
 ## Install miniflux
 
-Bot used miniflux API for adding subscriptions.
+Bot used miniflux (https://miniflux.app/) API for adding subscriptions.
 
 ```docker-compose
 volumes:
@@ -66,12 +62,12 @@ Use env variables MINIFLUX_BASE_URL(BASE_URL), MINIFLUX_USERNAME(ADMIN_USERNAME)
 
 
 ## Install bridge 
-
+Use any tg2rss bridge:
 https://github.com/vvzvlad/pyrogram-bridge  
 https://github.com/DIYgod/RSSHub  
 
 
-You need get rss subscription url from RSSHub and set it in env variable RSS_BRIDGE_URL    
+You need get rss subscription url from RSSHub and set it in env variable RSS_BRIDGE_URL  
 E.g. https://rsshub.example.com/telegram/channel/channel_name or https://pgbridge.example.com/rss/channel_name(need non-bot tg account!)  
 
 https://rsshub.example.com/telegram/channel/channel_name need response valid rss-xml feed  
@@ -104,11 +100,8 @@ ADMIN env variable is username of one user who can add subscriptions
 
 ## Use bot
 
-1)Forward message to bot from channel
-
-2)Bot will get categorues from miniflux and send to user keyboard with categories
-
-3)User select category and bot will create subscription url (on RSS_BRIDGE_URL)
-
-4)Bot add subscription to miniflux and send message to channel with subscription status
+1)Forward message to bot from channel  
+2)Bot will get categorues from miniflux and send to user keyboard with categories  
+3)User select category and bot will create subscription url (on RSS_BRIDGE_URL)  
+4)Bot add subscription to miniflux and send message to channel with subscription status  
 
