@@ -169,7 +169,7 @@ async def button_callback(update: Update, context: CallbackContext):
             miniflux_client.create_feed(feed_url, category_id=cat_id)
             category_title = context.user_data.get("categories", {}).get(cat_id, "Unknown")
             await query.edit_message_text(
-                f"Channel @{channel_title} has been successfully subscribed on {MINIFLUX_BASE_URL} reader instance, added to category '{category_title.strip()}', used RSS bridge {RSS_BRIDGE_URL}{channel_title}  "
+                f"Channel @{channel_title} has been successfully subscribed on {MINIFLUX_BASE_URL} reader instance, added to category '{category_title.strip()}', used RSS bridge {RSS_BRIDGE_URL}/{channel_title}  "
             )
         except (ClientError, ServerError) as error:
             status_code = getattr(error, 'status_code', 'unknown')
