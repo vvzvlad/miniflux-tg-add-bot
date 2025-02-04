@@ -45,8 +45,6 @@ services:
       RSS_BRIDGE_URL: https://rsshub.example.com/telegram/channel/
       ADMIN: admin_username # you username in telegram
       ACCEPT_CHANNELS_WITOUT_USERNAME: true
-    labels:
-      com.centurylinklabs.watchtower.enable: "true"
 ```
 
 ADMIN env variable is username of one user who can add subscriptions

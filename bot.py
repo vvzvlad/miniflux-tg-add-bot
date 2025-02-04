@@ -105,6 +105,8 @@ async def handle_message(update: Update, context: CallbackContext):
     logging.info(f"Processing forwarded message from channel: {channel_username}")
 
     feed_url = f"{RSS_BRIDGE_URL}/{channel_username}"
+    
+    await update.message.chat.send_action("typing")
     try:
         if check_feed_exists(miniflux_client, feed_url):
             logging.info(f"Channel @{channel_username} is already in subscriptions")
@@ -160,6 +162,8 @@ async def button_callback(update: Update, context: CallbackContext):
 
         encoded_channel_title = urllib.parse.quote(channel_title)
         feed_url = f"{RSS_BRIDGE_URL}/{encoded_channel_title}"
+        
+        await query.message.chat.send_action("typing")
         try:
             logging.info(f"Subscribing to feed '{feed_url}' in category {cat_id}")
             miniflux_client.create_feed(feed_url, category_id=cat_id)
