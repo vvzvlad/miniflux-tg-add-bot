@@ -1,11 +1,11 @@
 import logging
 import os
+import json
 import urllib.parse
 import miniflux
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, CallbackContext
 from telegram.ext import filters
-import json
 from miniflux import ClientError, ServerError
 
 # Configure logging with detailed messages
@@ -175,7 +175,7 @@ async def button_callback(update: Update, context: CallbackContext):
             status_code = getattr(error, 'status_code', 'unknown')
             try:
                 error_reason = error.get_error_reason()
-            except:
+            except AttributeError:
                 error_reason = str(error)
             
             error_message = f"Status: {status_code}, Error: {error_reason}"
