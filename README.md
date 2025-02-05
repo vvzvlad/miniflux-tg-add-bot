@@ -42,11 +42,12 @@ services:
       MINIFLUX_BASE_URL: https://miniflux.example.com
       MINIFLUX_USERNAME: admin
       MINIFLUX_PASSWORD: bla-bla
-      RSS_BRIDGE_URL: https://rsshub.example.com/telegram/channel/
+      RSS_BRIDGE_URL: https://rsshub.example.com/telegram/channel/{channel}?limit=20
       ADMIN: admin_username # you username in telegram
       ACCEPT_CHANNELS_WITOUT_USERNAME: true
-```
+``` s
 
+RSS_BRIDGE_URL - url to rss bridge with channel username/id replacing {channel} placeholder or appended to the end, if {channel} is not in url
 ADMIN env variable is username of one user who can add subscriptions
 ACCEPT_CHANNELS_WITOUT_USERNAME - if true, bot will accept channels without username (need to support this in rss bridge! rsshub does not support this)
 
@@ -54,12 +55,13 @@ ACCEPT_CHANNELS_WITOUT_USERNAME - if true, bot will accept channels without user
 
 1)Forward message to bot from channel  
 2)Bot will get categorues from miniflux and send to user keyboard with categories  
-3)User select category and bot will create subscription url (on RSS_BRIDGE_URL)  
+3)User select category and bot will create subscription url (RSS_BRIDGE_URL with channel username/id replacing {channel} placeholder or appended to the end)  
 4)Bot add subscription to miniflux and send message to channel with subscription status  
 
 ## Install miniflux (if not installed)
 
 Sample docker-compose.yml file for miniflux:
+
 ```docker-compose
 volumes:
   miniflux-db:

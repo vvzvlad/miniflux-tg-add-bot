@@ -104,7 +104,7 @@ async def handle_message(update: Update, context: CallbackContext):
     context.user_data["channel_title"] = channel_username
     logging.info(f"Processing forwarded message from channel: {channel_username}")
 
-    feed_url = f"{RSS_BRIDGE_URL}/{channel_username}"
+    feed_url = RSS_BRIDGE_URL.replace("{channel}", channel_username) if "{channel}" in RSS_BRIDGE_URL else f"{RSS_BRIDGE_URL}/{channel_username}"
     
     await update.message.chat.send_action("typing")
     try:
@@ -161,7 +161,7 @@ async def button_callback(update: Update, context: CallbackContext):
             return
 
         encoded_channel_title = urllib.parse.quote(channel_title)
-        feed_url = f"{RSS_BRIDGE_URL}/{encoded_channel_title}"
+        feed_url = RSS_BRIDGE_URL.replace("{channel}", encoded_channel_title) if "{channel}" in RSS_BRIDGE_URL else f"{RSS_BRIDGE_URL}/{encoded_channel_title}"
         
         await query.message.chat.send_action("typing")
         try:
