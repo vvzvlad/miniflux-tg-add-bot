@@ -180,7 +180,7 @@ async def button_callback(update: Update, context: CallbackContext):
             
             error_message = f"Status: {status_code}, Error: {error_reason}"
             logging.error(f"Miniflux API error while subscribing to feed '{feed_url}': {error_message}")
-            await query.edit_message_text(f"Failed to subscribe to RSS feed: {error_message}")
+            await query.edit_message_text(f"Failed to subscribe to RSS feed '{feed_url}': {error_message}")
         except Exception as error:
             logging.error(f"Unexpected error while subscribing to feed '{feed_url}': {str(error)}", exc_info=True)
             await query.edit_message_text(f"Unexpected error while subscribing to RSS feed: {str(error)}")
