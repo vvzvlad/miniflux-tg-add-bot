@@ -3,6 +3,7 @@ import os
 import json
 import urllib.parse
 import miniflux
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, CallbackContext
 from telegram.ext import filters
@@ -415,19 +416,49 @@ async def add_flag(update: Update, context: CallbackContext):
 
         # Update feed in Miniflux
         try:
-            miniflux_client.update_feed(feed_id=feed_id, feed={"feed_url": new_url})
-            logging.info(f"Successfully updated feed URL for {channel_name}, new url: {new_url}")
+            # Создаем заголовки для запроса
+            headers = {
+                "Content-Type": "application/json",
+                "X-Auth-Username": MINIFLUX_USERNAME,
+                "X-Auth-Password": MINIFLUX_PASSWORD
+            }
+            
+            # Создаем данные для запроса
+            data = {
+                "feed_url": new_url
+            }
+            
+            # Отправляем PUT-запрос напрямую
+            api_url = f"{MINIFLUX_BASE_URL}/v1/feeds/{feed_id}"
+            logging.info(f"Sending PUT request to {api_url} with data: {data}")
+            
+            response = requests.put(api_url, json=data, headers=headers)
+            response.raise_for_status()  # Вызовет исключение, если статус не 2xx
+            
+            logging.info(f"API response: {response.status_code} - {response.text}")
+            
+            # Получаем обновленный фид
+            updated_feed = miniflux_client.get_feed(feed_id)
+            updated_url = updated_feed.get("feed_url", "")
+            logging.info(f"Verified updated feed URL: {updated_url}")
+            
+            # Извлекаем флаги из обновленного URL
+            updated_flags = []
+            if "exclude_flags=" in updated_url:
+                flags_part = updated_url.split("exclude_flags=")[1].split("&")[0]
+                updated_flags = flags_part.split(",")
+            
+            # Выводим обновленные флаги через пробел
+            flags_display = " ".join(updated_flags)
+            
+            await update.message.reply_text(
+                f"Added flag '{flag_to_add}' to channel @{channel_name}.\n"
+                f"Current flags: {flags_display}"
+            )
+            
         except Exception as e:
             logging.error(f"Failed to update feed URL: {e}")
             raise
-        
-        # Get updated flags as space-separated string for display
-        flags_display = " ".join(current_flags)
-        
-        await update.message.reply_text(
-            f"Added flag '{flag_to_add}' to channel @{channel_name}.\n"
-            f"Current flags: {flags_display}"
-        )
         
     except Exception as error:
         logging.error(f"Failed to add flag: {error}", exc_info=True)
