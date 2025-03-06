@@ -333,6 +333,97 @@ async def button_callback(update: Update, context: CallbackContext):
             logging.error(f"Unexpected error while subscribing to feed '{feed_url}': {str(error)}", exc_info=True)
             await query.edit_message_text(f"Unexpected error while subscribing to RSS feed: {str(error)}")
 
+async def add_flag(update: Update, context: CallbackContext):
+    """
+    Handle the /add_flag command.
+    Adds a new flag to an existing channel subscription.
+    Format: /add_flag channel_name flag_name
+    """
+    user = update.message.from_user
+    if not user or user.username != ADMIN_USERNAME:
+        logging.warning(f"Unauthorized access attempt from user: {user.username if user else 'Unknown'}")
+        await update.message.reply_text("Access denied. Only admin can use this bot.")
+        return
+    
+    # Check if command has correct arguments
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("Usage: /add_flag channel_name flag_name")
+        return
+    
+    channel_name = context.args[0].lstrip('@')
+    flag_to_add = context.args[1].strip()
+    
+    await update.message.chat.send_action("typing")
+    
+    try:
+        # Get all feeds
+        feeds = miniflux_client.get_feeds()
+        target_feed = None
+        
+        # Find the feed for the specified channel
+        for feed in feeds:
+            feed_url = feed.get("feed_url", "")
+            channel = extract_channel_from_feed_url(feed_url)
+            
+            if channel and channel.lower() == channel_name.lower():
+                target_feed = feed
+                break
+        
+        if not target_feed:
+            await update.message.reply_text(f"Channel @{channel_name} not found in subscriptions.")
+            return
+        
+        feed_url = target_feed.get("feed_url", "")
+        feed_id = target_feed.get("id")
+        
+        # Parse current flags
+        current_flags = []
+        if "exclude_flags=" in feed_url:
+            flags_part = feed_url.split("exclude_flags=")[1].split("&")[0]
+            current_flags = flags_part.split(",")
+        
+        # Check if flag already exists
+        if flag_to_add in current_flags:
+            await update.message.reply_text(f"Flag '{flag_to_add}' is already set for channel @{channel_name}.")
+            return
+        
+        # Add new flag
+        current_flags.append(flag_to_add)
+        
+        # Create new URL with updated flags
+        new_url = feed_url
+        if "exclude_flags=" in feed_url:
+            # Replace existing flags
+            flags_str = ",".join(current_flags)
+            parts = feed_url.split("exclude_flags=")
+            rest = parts[1].split("&", 1)
+            if len(rest) > 1:
+                new_url = f"{parts[0]}exclude_flags={flags_str}&{rest[1]}"
+            else:
+                new_url = f"{parts[0]}exclude_flags={flags_str}"
+        else:
+            # Add flags parameter
+            flags_str = ",".join(current_flags)
+            if "?" in feed_url:
+                new_url = f"{feed_url}&exclude_flags={flags_str}"
+            else:
+                new_url = f"{feed_url}?exclude_flags={flags_str}"
+        
+        # Update feed in Miniflux
+        miniflux_client.update_feed(feed_id=feed_id, feed={"feed_url": new_url})
+        
+        # Get updated flags as space-separated string for display
+        flags_display = " ".join(current_flags)
+        
+        await update.message.reply_text(
+            f"Added flag '{flag_to_add}' to channel @{channel_name}.\n"
+            f"Current flags: {flags_display}"
+        )
+        
+    except Exception as error:
+        logging.error(f"Failed to add flag: {error}", exc_info=True)
+        await update.message.reply_text(f"Failed to add flag: {str(error)}")
+
 def main():
     """
     Initialize the Telegram bot and register handlers.
@@ -343,7 +434,8 @@ def main():
         try:
             commands = [
                 ("start", "Start working with the bot"),
-                ("list", "Show list of subscribed channels")
+                ("list", "Show list of subscribed channels"),
+                ("add_flag", "Add flag to channel: /add_flag channel flag")
             ]
             await application.bot.set_my_commands(commands)
             logging.info("Bot commands have been set up successfully")
@@ -361,6 +453,7 @@ def main():
     # Register command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("list", list_channels))
+    application.add_handler(CommandHandler("add_flag", add_flag))
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
     
