@@ -158,7 +158,7 @@ async def list_channels(update: Update, context: CallbackContext):
                 
                 # Add flags if present
                 if feed["flags"]:
-                    feed_line += f", flags: {','.join(feed['flags'])}"
+                    feed_line += f", flags: {' '.join(feed['flags'])}"
                 
                 # Add excluded words if present
                 if feed["excluded_words"] and feed["excluded_words"][0]:
@@ -180,7 +180,7 @@ async def list_channels(update: Update, context: CallbackContext):
                     
                     # Add flags if present
                     if feed["flags"]:
-                        feed_line += f", flags: {','.join(feed['flags'])}"
+                        feed_line += f", flags: {' '.join(feed['flags'])}"
                     
                     # Add excluded words if present
                     if feed["excluded_words"] and feed["excluded_words"][0]:
