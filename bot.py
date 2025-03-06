@@ -419,7 +419,21 @@ async def add_flag(update: Update, context: CallbackContext):
         try:
             # Используем только необходимые поля для обновления
             update_data = {"feed_url": new_url}
-            miniflux_client.update_feed(feed_id=feed_id, feed=update_data)
+            logging.info(f"Calling update_feed with feed_id={feed_id}, feed={update_data}")
+            
+            # Сохраняем результат обновления
+            result = miniflux_client.update_feed(feed_id=feed_id, feed=update_data)
+            logging.info(f"Update result: {result}")
+            
+            # Проверяем, что URL действительно обновился
+            updated_feed = miniflux_client.get_feed(feed_id)
+            updated_url = updated_feed.get("feed_url", "")
+            
+            if updated_url == new_url:
+                logging.info(f"URL successfully updated to: {updated_url}")
+            else:
+                logging.error(f"URL update failed! Expected: {new_url}, Got: {updated_url}")
+            
             logging.info(f"Successfully updated feed URL for {channel_name}, new url: {new_url}")
         except Exception as e:
             logging.error(f"Failed to update feed: {e}", exc_info=True)
