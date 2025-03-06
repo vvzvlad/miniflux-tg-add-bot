@@ -50,6 +50,29 @@ def check_feed_exists(client, feed_url):
         logging.error(f"Failed to check existing feeds: {error}")
         raise
 
+def extract_channel_from_feed_url(feed_url):
+    """
+    Extract channel username or ID from feed URL
+    """
+    if not RSS_BRIDGE_URL or not feed_url.startswith(RSS_BRIDGE_URL.split("{channel}")[0]):
+        return None
+    
+    # Handle URLs with {channel} placeholder
+    if "{channel}" in RSS_BRIDGE_URL:
+        base_part = RSS_BRIDGE_URL.split("{channel}")[0]
+        if feed_url.startswith(base_part):
+            remaining = feed_url[len(base_part):]
+            # Extract until next slash or end of string
+            channel = remaining.split("/")[0] if "/" in remaining else remaining
+            return urllib.parse.unquote(channel)
+    # Handle URLs with channel at the end
+    else:
+        channel = feed_url[len(RSS_BRIDGE_URL):].strip("/")
+        if channel:
+            return urllib.parse.unquote(channel)
+    
+    return None
+
 async def start(update: Update, context: CallbackContext):
     """
     Handle the /start command.
@@ -62,6 +85,67 @@ async def start(update: Update, context: CallbackContext):
         return
 
     await update.message.reply_text("Forward me a message from a channel to subscribe to its RSS feed.")
+
+async def list_channels(update: Update, context: CallbackContext):
+    """
+    Handle the /list command.
+    Lists all channels subscribed through RSS Bridge.
+    """
+    user = update.message.from_user
+    if not user or user.username != ADMIN_USERNAME:
+        logging.warning(f"Unauthorized access attempt from user: {user.username if user else 'Unknown'}")
+        await update.message.reply_text("Access denied. Only admin can use this bot.")
+        return
+    
+    await update.message.chat.send_action("typing")
+    
+    try:
+        feeds = miniflux_client.get_feeds()
+        bridge_feeds = []
+        
+        for feed in feeds:
+            feed_url = feed.get("feed_url", "")
+            channel = extract_channel_from_feed_url(feed_url)
+            
+            if channel:
+                bridge_feeds.append({
+                    "title": feed.get("title", "Unknown"),
+                    "channel": channel,
+                    "feed_url": feed_url,
+                    "category_id": feed.get("category", {}).get("id"),
+                    "category_title": feed.get("category", {}).get("title", "Unknown")
+                })
+        
+        if not bridge_feeds:
+            await update.message.reply_text("No channels subscribed through RSS Bridge found.")
+            return
+        
+        # Sort by category and then by title
+        bridge_feeds.sort(key=lambda x: (x["category_title"], x["title"]))
+        
+        # Group by category
+        categories = {}
+        for feed in bridge_feeds:
+            cat_title = feed["category_title"]
+            if cat_title not in categories:
+                categories[cat_title] = []
+            categories[cat_title].append(feed)
+        
+        # Build response message
+        response = "Subscribed channels by category:\n\n"
+        
+        for cat_title, feeds in categories.items():
+            response += f"📁 *{cat_title}*\n"
+            for feed in feeds:
+                response += f"  • {feed['title']}\n"
+                response += f"    RSS: `{feed['feed_url']}`\n"
+            response += "\n"
+        
+        await update.message.reply_text(response, parse_mode="Markdown")
+        
+    except Exception as error:
+        logging.error(f"Failed to list channels: {error}", exc_info=True)
+        await update.message.reply_text(f"Failed to list channels: {str(error)}")
 
 async def handle_message(update: Update, context: CallbackContext):
     """
@@ -191,6 +275,7 @@ def main():
     """
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("list", list_channels))
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.run_polling()
