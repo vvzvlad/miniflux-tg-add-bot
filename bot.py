@@ -108,10 +108,24 @@ async def list_channels(update: Update, context: CallbackContext):
             channel = extract_channel_from_feed_url(feed_url)
             
             if channel:
+                # Extract flags and excluded words from URL
+                flags = []
+                excluded_words = []
+                
+                if "exclude_flags=" in feed_url:
+                    flags_part = feed_url.split("exclude_flags=")[1].split("&")[0]
+                    flags = flags_part.split(",")
+                
+                if "exclude_text=" in feed_url:
+                    words_part = feed_url.split("exclude_text=")[1].split("&")[0]
+                    excluded_words = [urllib.parse.unquote(words_part)]
+                
                 bridge_feeds.append({
                     "title": feed.get("title", "Unknown"),
                     "channel": channel,
                     "feed_url": feed_url,
+                    "flags": flags,
+                    "excluded_words": excluded_words,
                     "category_id": feed.get("category", {}).get("id"),
                     "category_title": feed.get("category", {}).get("title", "Unknown")
                 })
@@ -138,8 +152,25 @@ async def list_channels(update: Update, context: CallbackContext):
             # Build category message
             cat_message = f"📁 {cat_title}\n"
             for feed in feeds:
-                cat_message += f"  • {feed['title']}\n"
-                cat_message += f"    RSS: {feed['feed_url']}\n"
+                channel_name = feed["title"]
+                channel_id = feed["channel"]
+                
+                # Format as username if it doesn't look like a numeric ID
+                if not channel_id.isdigit():
+                    channel_id = f"@{channel_id}"
+                
+                feed_line = f"  • {channel_name} ({channel_id})"
+                
+                # Add flags if present
+                if feed["flags"]:
+                    feed_line += f", flags: {','.join(feed['flags'])}"
+                
+                # Add excluded words if present
+                if feed["excluded_words"] and feed["excluded_words"][0]:
+                    words = ', '.join([w.strip('"\'') for w in feed["excluded_words"]])
+                    feed_line += f", words: {words}"
+                
+                cat_message += feed_line + "\n"
             
             # Check if message is too long (Telegram limit is 4096 chars)
             if len(cat_message) > 4000:
@@ -148,7 +179,25 @@ async def list_channels(update: Update, context: CallbackContext):
                 current_chunk = f"📁 {cat_title} (continued)\n"
                 
                 for feed in feeds:
-                    feed_text = f"  • {feed['title']}\n    RSS: {feed['feed_url']}\n"
+                    channel_name = feed["title"]
+                    channel_id = feed["channel"]
+                    
+                    # Format as username if it doesn't look like a numeric ID
+                    if not channel_id.isdigit():
+                        channel_id = f"@{channel_id}"
+                    
+                    feed_line = f"  • {channel_name} ({channel_id})"
+                    
+                    # Add flags if present
+                    if feed["flags"]:
+                        feed_line += f", flags: {','.join(feed['flags'])}"
+                    
+                    # Add excluded words if present
+                    if feed["excluded_words"] and feed["excluded_words"][0]:
+                        words = ', '.join([w.strip('"\'') for w in feed["excluded_words"]])
+                        feed_line += f", words: {words}"
+                    
+                    feed_text = feed_line + "\n"
                     
                     # If adding this feed would make the chunk too long, send it and start a new one
                     if len(current_chunk) + len(feed_text) > 4000:
