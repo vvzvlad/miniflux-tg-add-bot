@@ -409,8 +409,17 @@ async def add_flag(update: Update, context: CallbackContext):
             else:
                 new_url = f"{feed_url}?exclude_flags={flags_str}"
         
+        # Add logging before and after updating URL
+        logging.info(f"Original feed URL: {feed_url}")
+        logging.info(f"New feed URL: {new_url}")
+
         # Update feed in Miniflux
-        miniflux_client.update_feed(feed_id=feed_id, feed={"feed_url": new_url})
+        try:
+            miniflux_client.update_feed(feed_id=feed_id, feed={"feed_url": new_url})
+            logging.info(f"Successfully updated feed URL for {channel_name}, new url: {new_url}")
+        except Exception as e:
+            logging.error(f"Failed to update feed URL: {e}")
+            raise
         
         # Get updated flags as space-separated string for display
         flags_display = " ".join(current_flags)
