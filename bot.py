@@ -135,13 +135,14 @@ async def list_channels(update: Update, context: CallbackContext):
         response = "Subscribed channels by category:\n\n"
         
         for cat_title, feeds in categories.items():
-            response += f"📁 *{cat_title}*\n"
+            response += f"📁 {cat_title}\n"
             for feed in feeds:
                 response += f"  • {feed['title']}\n"
-                response += f"    RSS: `{feed['feed_url']}`\n"
+                response += f"    RSS: {feed['feed_url']}\n"
             response += "\n"
         
-        await update.message.reply_text(response, parse_mode="Markdown")
+        # Отправляем без Markdown форматирования
+        await update.message.reply_text(response)
         
     except Exception as error:
         logging.error(f"Failed to list channels: {error}", exc_info=True)
