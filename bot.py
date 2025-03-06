@@ -375,8 +375,10 @@ async def add_flag(update: Update, context: CallbackContext):
             await update.message.reply_text(f"Channel @{channel_name} not found in subscriptions.")
             return
         
-        feed_url = target_feed.get("feed_url", "")
+        # Get the most up-to-date feed data
         feed_id = target_feed.get("id")
+        updated_target_feed = miniflux_client.get_feed(feed_id)
+        feed_url = updated_target_feed.get("feed_url", "")
         
         # Parse current flags
         current_flags = []
