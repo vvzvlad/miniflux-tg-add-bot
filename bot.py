@@ -275,10 +275,31 @@ def main():
     Initialize the Telegram bot and register handlers.
     """
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
+    # Register command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("list", list_channels))
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Add commands to bot menu
+    commands = [
+        ("start", "Start working with the bot"),
+        ("list", "Show list of subscribed channels")
+    ]
+    
+    async def setup_commands():
+        """Set up bot commands on startup"""
+        try:
+            await application.bot.set_my_commands(commands)
+            logging.info("Bot commands have been set up successfully")
+        except Exception as e:
+            logging.error(f"Failed to set up bot commands: {e}")
+    
+    # Run async function to set up commands
+    application.create_task(setup_commands())
+    
+    # Start the bot
     application.run_polling()
 
 if __name__ == "__main__":
