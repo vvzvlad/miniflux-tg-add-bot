@@ -131,18 +131,42 @@ async def list_channels(update: Update, context: CallbackContext):
                 categories[cat_title] = []
             categories[cat_title].append(feed)
         
-        # Build response message
-        response = "Subscribed channels by category:\n\n"
+        # Send messages by category to avoid message length limit
+        await update.message.reply_text("Subscribed channels by category:")
         
         for cat_title, feeds in categories.items():
-            response += f"📁 {cat_title}\n"
+            # Build category message
+            cat_message = f"📁 {cat_title}\n"
             for feed in feeds:
-                response += f"  • {feed['title']}\n"
-                response += f"    RSS: {feed['feed_url']}\n"
-            response += "\n"
-        
-        # Отправляем без Markdown форматирования
-        await update.message.reply_text(response)
+                cat_message += f"  • {feed['title']}\n"
+                cat_message += f"    RSS: {feed['feed_url']}\n"
+            
+            # Check if message is too long (Telegram limit is 4096 chars)
+            if len(cat_message) > 4000:
+                # Split into multiple messages
+                chunks = []
+                current_chunk = f"📁 {cat_title} (continued)\n"
+                
+                for feed in feeds:
+                    feed_text = f"  • {feed['title']}\n    RSS: {feed['feed_url']}\n"
+                    
+                    # If adding this feed would make the chunk too long, send it and start a new one
+                    if len(current_chunk) + len(feed_text) > 4000:
+                        chunks.append(current_chunk)
+                        current_chunk = f"📁 {cat_title} (continued)\n"
+                    
+                    current_chunk += feed_text
+                
+                # Add the last chunk if it has content
+                if current_chunk != f"📁 {cat_title} (continued)\n":
+                    chunks.append(current_chunk)
+                
+                # Send all chunks
+                for chunk in chunks:
+                    await update.message.reply_text(chunk)
+            else:
+                # Send as a single message
+                await update.message.reply_text(cat_message)
         
     except Exception as error:
         logging.error(f"Failed to list channels: {error}", exc_info=True)
