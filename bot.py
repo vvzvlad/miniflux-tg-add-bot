@@ -153,13 +153,8 @@ async def list_channels(update: Update, context: CallbackContext):
             cat_message = f"📁 {cat_title}\n"
             for feed in feeds:
                 channel_name = feed["title"]
-                channel_id = feed["channel"]
                 
-                # Format as username if it doesn't look like a numeric ID
-                if not channel_id.isdigit():
-                    channel_id = f"@{channel_id}"
-                
-                feed_line = f"  • {channel_name} ({channel_id})"
+                feed_line = f"  • {channel_name}"
                 
                 # Add flags if present
                 if feed["flags"]:
@@ -180,13 +175,8 @@ async def list_channels(update: Update, context: CallbackContext):
                 
                 for feed in feeds:
                     channel_name = feed["title"]
-                    channel_id = feed["channel"]
                     
-                    # Format as username if it doesn't look like a numeric ID
-                    if not channel_id.isdigit():
-                        channel_id = f"@{channel_id}"
-                    
-                    feed_line = f"  • {channel_name} ({channel_id})"
+                    feed_line = f"  • {channel_name}"
                     
                     # Add flags if present
                     if feed["flags"]:
