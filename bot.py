@@ -415,42 +415,62 @@ async def add_flag(update: Update, context: CallbackContext):
         logging.info(f"Original feed URL: {feed_url}")
         logging.info(f"New feed URL: {new_url}")
 
-        # Отправляем обновленные данные
-        try:
-            # Используем только необходимые поля для обновления
-            update_data = {"feed_url": new_url}
-            logging.info(f"Calling update_feed with feed_id={feed_id}, feed={update_data}")
-            
-            # Сохраняем результат обновления
-            result = miniflux_client.update_feed(feed_id=feed_id, feed=update_data)
-            logging.info(f"Update result: {result}")
-            
-            # Проверяем, что URL действительно обновился
-            updated_feed = miniflux_client.get_feed(feed_id)
-            updated_url = updated_feed.get("feed_url", "")
-            
-            if updated_url == new_url:
-                logging.info(f"URL successfully updated to: {updated_url}")
-            else:
-                logging.error(f"URL update failed! Expected: {new_url}, Got: {updated_url}")
-            
-            logging.info(f"Successfully updated feed URL for {channel_name}, new url: {new_url}")
-        except Exception as e:
-            logging.error(f"Failed to update feed: {e}", exc_info=True)
-            raise
+        # Create headers for the request
+        headers = {
+            "Content-Type": "application/json"
+        }
+
+        # Use basic authentication
+        auth = (MINIFLUX_USERNAME, MINIFLUX_PASSWORD)
         
-        # Получаем обновленный фид для проверки
+        # Create data for the request
+        data = {
+            "feed_url": new_url,
+            # Add all other fields from the current feed to avoid losing them
+            "site_url": target_feed.get("site_url", ""),
+            "title": target_feed.get("title", ""),
+            "category_id": target_feed.get("category", {}).get("id"),
+            "crawler": target_feed.get("crawler", False),
+            "user_agent": target_feed.get("user_agent", ""),
+            "username": target_feed.get("username", ""),
+            "password": target_feed.get("password", "")
+        }
+        
+        # Send PUT request directly
+        api_url = f"{MINIFLUX_BASE_URL.rstrip('/')}/v1/feeds/{feed_id}"
+        logging.info(f"Sending PUT request to {api_url} with data: {data}")
+        
+        response = requests.put(api_url, json=data, headers=headers, auth=auth, timeout=10)
+        response.raise_for_status()  # Will raise an exception if status is not 2xx
+        
+        logging.info(f"API response: {response.status_code} - {response.text}")
+        
+        # Get the updated feed
         updated_feed = miniflux_client.get_feed(feed_id)
         updated_url = updated_feed.get("feed_url", "")
         logging.info(f"Verified updated feed URL: {updated_url}")
         
-        # Извлекаем флаги из обновленного URL
+        # Check if the URL was updated
+        if updated_url == new_url:
+            logging.info(f"URL successfully updated to: {updated_url}")
+        else:
+            logging.error(f"URL update failed! Expected: {new_url}, Got: {updated_url}")
+            
+            # If URL was not updated, show a message to the user
+            await update.message.reply_text(
+                f"Failed to update feed URL. Miniflux may be ignoring URL parameters.\n"
+                f"Please update the URL manually in the Miniflux interface:\n"
+                f"{new_url}"
+            )
+            return
+        
+        # Extract updated flags from the updated URL
         updated_flags = []
         if "exclude_flags=" in updated_url:
             flags_part = updated_url.split("exclude_flags=")[1].split("&")[0]
             updated_flags = flags_part.split(",")
         
-        # Выводим обновленные флаги через пробел
+        # Display updated flags separated by spaces
         flags_display = " ".join(updated_flags)
         
         await update.message.reply_text(
@@ -458,9 +478,10 @@ async def add_flag(update: Update, context: CallbackContext):
             f"Current flags: {flags_display}"
         )
         
-    except Exception as error:
-        logging.error(f"Failed to add flag: {error}", exc_info=True)
-        await update.message.reply_text(f"Failed to add flag: {str(error)}")
+    except Exception as e:
+        logging.error(f"Failed to update feed: {e}", exc_info=True)
+        await update.message.reply_text(f"Failed to add flag: {str(e)}")
+    
 
 def main():
     """
