@@ -275,30 +275,30 @@ async def handle_message(update: Update, context: CallbackContext):
             # Create keyboard with flag options
             keyboard = [
                 [
-                    InlineKeyboardButton("Add flag: fwd", callback_data=f"add_flag_{channel_username}_fwd"),
-                    InlineKeyboardButton("Add flag: video", callback_data=f"add_flag_{channel_username}_video")
+                    InlineKeyboardButton("Add flag: fwd", callback_data=f"add_flag|{channel_username}|fwd"),
+                    InlineKeyboardButton("Add flag: video", callback_data=f"add_flag|{channel_username}|video")
                 ],
                 [
-                    InlineKeyboardButton("Add flag: stream", callback_data=f"add_flag_{channel_username}_stream"),
-                    InlineKeyboardButton("Add flag: donat", callback_data=f"add_flag_{channel_username}_donat")
+                    InlineKeyboardButton("Add flag: stream", callback_data=f"add_flag|{channel_username}|stream"),
+                    InlineKeyboardButton("Add flag: donat", callback_data=f"add_flag|{channel_username}|donat")
                 ],
                 [
-                    InlineKeyboardButton("Add flag: clown", callback_data=f"add_flag_{channel_username}_clown"),
-                    InlineKeyboardButton("Add flag: poo", callback_data=f"add_flag_{channel_username}_poo")
+                    InlineKeyboardButton("Add flag: clown", callback_data=f"add_flag|{channel_username}|clown"),
+                    InlineKeyboardButton("Add flag: poo", callback_data=f"add_flag|{channel_username}|poo")
                 ],
                 [
-                    InlineKeyboardButton("Add flag: advert", callback_data=f"add_flag_{channel_username}_advert"),
-                    InlineKeyboardButton("Add flag: link", callback_data=f"add_flag_{channel_username}_link")
+                    InlineKeyboardButton("Add flag: advert", callback_data=f"add_flag|{channel_username}|advert"),
+                    InlineKeyboardButton("Add flag: link", callback_data=f"add_flag|{channel_username}|link")
                 ],
                 [
-                    InlineKeyboardButton("Add flag: mention", callback_data=f"add_flag_{channel_username}_mention"),
-                    InlineKeyboardButton("Add flag: hid_channel", callback_data=f"add_flag_{channel_username}_hid_channel")
+                    InlineKeyboardButton("Add flag: mention", callback_data=f"add_flag|{channel_username}|mention"),
+                    InlineKeyboardButton("Add flag: hid_channel", callback_data=f"add_flag|{channel_username}|hid_channel")
                 ],
                 [
-                    InlineKeyboardButton("Add flag: foreign_channel", callback_data=f"add_flag_{channel_username}_foreign_channel")
+                    InlineKeyboardButton("Add flag: foreign_channel", callback_data=f"add_flag|{channel_username}|foreign_channel")
                 ],
                 [
-                    InlineKeyboardButton("Delete channel", callback_data=f"delete_{channel_username}")
+                    InlineKeyboardButton("Delete channel", callback_data=f"delete|{channel_username}")
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -382,15 +382,15 @@ async def button_callback(update: Update, context: CallbackContext):
             logging.error(f"Unexpected error while subscribing to feed '{feed_url}': {str(error)}", exc_info=True)
             await query.edit_message_text(f"Unexpected error while subscribing to RSS feed: {str(error)}")
     
-    elif data.startswith("add_flag_"):
+    elif data.startswith("add_flag|"):
         # Handle add flag button
-        parts = data.split("_", 3)
-        if len(parts) < 4:
+        parts = data.split("|")
+        if len(parts) < 3:
             await query.edit_message_text("Invalid flag data.")
             return
         
-        channel_name = parts[2]
-        flag_name = parts[3]
+        channel_name = parts[1]
+        flag_name = parts[2]
         
         # Call the shared function for adding flags
         success, message, updated_flags = await add_flag_to_channel(channel_name, flag_name)
@@ -407,9 +407,9 @@ async def button_callback(update: Update, context: CallbackContext):
         else:
             await query.edit_message_text(message)
     
-    elif data.startswith("delete_"):
+    elif data.startswith("delete|"):
         # Handle delete channel button
-        channel_name = data.split("_", 1)[1]
+        channel_name = data.split("|", 1)[1]
         
         try:
             # Get all feeds
@@ -647,7 +647,7 @@ def create_flag_keyboard(channel_name, current_flags):
     row = []
     
     for i, flag in enumerate(available_flags):
-        row.append(InlineKeyboardButton(f"Add flag: {flag}", callback_data=f"add_flag_{channel_name}_{flag}"))
+        row.append(InlineKeyboardButton(f"Add flag: {flag}", callback_data=f"add_flag|{channel_name}|{flag}"))
         
         # Add 2 buttons per row
         if len(row) == 2 or i == len(available_flags) - 1:
@@ -655,7 +655,7 @@ def create_flag_keyboard(channel_name, current_flags):
             row = []
     
     # Add delete button at the bottom
-    keyboard.append([InlineKeyboardButton("Delete channel", callback_data=f"delete_{channel_name}")])
+    keyboard.append([InlineKeyboardButton("Delete channel", callback_data=f"delete|{channel_name}")])
     
     return keyboard
 
