@@ -269,55 +269,9 @@ async def handle_message(update: Update, context: CallbackContext):
     
     await update.message.chat.send_action("typing")
     try:
-        # Check if feed exists and get feed details if it does
-        feed_exists, feed_id, current_flags = check_feed_exists_with_details(miniflux_client, feed_url)
-        
-        if feed_exists:
+        if check_feed_exists(miniflux_client, feed_url):
             logging.info(f"Channel @{channel_username} is already in subscriptions")
-            
-            # Store feed_id in context for callback handlers
-            context.user_data["current_feed_id"] = feed_id
-            context.user_data["current_feed_url"] = feed_url
-            
-            # Create keyboard with management options
-            keyboard = [
-                [InlineKeyboardButton("Delete channel from subscriptions", callback_data="delete_feed")],
-            ]
-            
-            # Add flag buttons
-            available_flags = [
-                "fwd", "video", "stream", "donat", "clown", 
-                "poo", "advert", "link", "mention", "hid_channel", "foreign_channel"
-            ]
-            
-            # Create rows with 3 buttons each for flags
-            flag_buttons = []
-            row = []
-            
-            for flag in available_flags:
-                # Check if flag is already set
-                is_set = flag in current_flags
-                button_text = f"✅ {flag}" if is_set else f"➕ {flag}"
-                row.append(InlineKeyboardButton(button_text, callback_data=f"toggle_flag_{flag}"))
-                
-                # Create a new row after every 3 buttons
-                if len(row) == 3:
-                    flag_buttons.append(row)
-                    row = []
-            
-            # Add any remaining buttons
-            if row:
-                flag_buttons.append(row)
-            
-            # Add flag buttons to keyboard
-            keyboard.extend(flag_buttons)
-            
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await update.message.reply_text(
-                f"Channel @{channel_username} is already in subscriptions. What would you like to do?",
-                reply_markup=reply_markup
-            )
+            await update.message.reply_text(f"Channel @{channel_username} is already in subscriptions.")
             return
     except Exception as error:
         logging.error(f"Failed to check subscriptions: {error}")
@@ -347,39 +301,14 @@ async def handle_message(update: Update, context: CallbackContext):
         f"Select category for channel @{channel_username}:", reply_markup=reply_markup
     )
 
-def check_feed_exists_with_details(client, feed_url):
-    """
-    Check if feed already exists in subscriptions and return details
-    
-    Returns:
-        tuple: (exists, feed_id, current_flags)
-    """
-    try:
-        feeds = client.get_feeds()
-        for feed in feeds:
-            if feed["feed_url"] == feed_url:
-                # Extract current flags
-                current_flags = []
-                if "exclude_flags=" in feed_url:
-                    flags_part = feed_url.split("exclude_flags=")[1].split("&")[0]
-                    current_flags = flags_part.split(",")
-                
-                return True, feed["id"], current_flags
-        return False, None, []
-    except Exception as error:
-        logging.error(f"Failed to check existing feeds: {error}")
-        raise
-
 async def button_callback(update: Update, context: CallbackContext):
     """
-    Handle callback query when user selects a category or management option.
+    Handle callback query when user selects a category.
     """
     query = update.callback_query
     await query.answer()
     data = query.data
-    
     if data.startswith("cat_"):
-        # Handle category selection (existing code)
         cat_id_str = data.split("_", 1)[1]
         try:
             cat_id = int(cat_id_str)
@@ -416,142 +345,232 @@ async def button_callback(update: Update, context: CallbackContext):
         except Exception as error:
             logging.error(f"Unexpected error while subscribing to feed '{feed_url}': {str(error)}", exc_info=True)
             await query.edit_message_text(f"Unexpected error while subscribing to RSS feed: {str(error)}")
+
+async def add_flag(update: Update, context: CallbackContext):
+    """
+    Handle the /add_flag command.
+    Adds a new flag to an existing channel subscription.
+    Format: /add_flag channel_name flag_name
+    """
+    user = update.message.from_user
+    if not user or user.username != ADMIN_USERNAME:
+        logging.warning(f"Unauthorized access attempt from user: {user.username if user else 'Unknown'}")
+        await update.message.reply_text("Access denied. Only admin can use this bot.")
+        return
     
-    elif data == "delete_feed":
-        # Handle feed deletion
-        feed_id = context.user_data.get("current_feed_id")
-        if not feed_id:
-            await query.edit_message_text("Feed information is missing.")
+    # Check if command has correct arguments
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("Usage: /add_flag channel_name flag_name")
+        return
+    
+    channel_name = context.args[0].lstrip('@')
+    flag_to_add = context.args[1].strip()
+    
+    await update.message.chat.send_action("typing")
+    
+    try:
+        # Get all feeds
+        feeds = miniflux_client.get_feeds()
+        target_feed = None
+        
+        # Find the feed for the specified channel
+        for feed in feeds:
+            feed_url = feed.get("feed_url", "")
+            channel = extract_channel_from_feed_url(feed_url)
+            
+            if channel and channel.lower() == channel_name.lower():
+                target_feed = feed
+                break
+        
+        if not target_feed:
+            await update.message.reply_text(f"Channel @{channel_name} not found in subscriptions.")
             return
         
-        try:
-            miniflux_client.delete_feed(feed_id)
-            await query.edit_message_text("Channel successfully deleted from subscriptions.")
-        except Exception as error:
-            logging.error(f"Failed to delete feed: {error}", exc_info=True)
-            await query.edit_message_text(f"Error deleting channel: {str(error)}")
-    
-    elif data.startswith("toggle_flag_"):
-        # Handle flag toggling
-        flag = data.split("_", 2)[2]
-        feed_id = context.user_data.get("current_feed_id")
-        feed_url = context.user_data.get("current_feed_url")
+        # Get the most up-to-date feed data
+        feed_id = target_feed.get("id")
+        updated_target_feed = miniflux_client.get_feed(feed_id)
+        feed_url = updated_target_feed.get("feed_url", "")
         
-        if not feed_id or not feed_url:
-            await query.edit_message_text("Feed information is missing.")
+        # Parse current flags
+        current_flags = []
+        if "exclude_flags=" in feed_url:
+            flags_part = feed_url.split("exclude_flags=")[1].split("&")[0]
+            current_flags = flags_part.split(",")
+        
+        # Check if flag already exists
+        if flag_to_add in current_flags:
+            await update.message.reply_text(f"Flag '{flag_to_add}' is already set for channel @{channel_name}.")
             return
         
-        try:
-            # Get current feed data
-            feed = miniflux_client.get_feed(feed_id)
-            current_feed_url = feed.get("feed_url", "")
-            
-            # Parse current flags
-            current_flags = []
-            if "exclude_flags=" in current_feed_url:
-                flags_part = current_feed_url.split("exclude_flags=")[1].split("&")[0]
-                current_flags = flags_part.split(",")
-            
-            # Toggle flag
-            if flag in current_flags:
-                current_flags.remove(flag)
-                action = "removed from"
+        # Add new flag
+        current_flags.append(flag_to_add)
+        
+        # Create new URL with updated flags
+        new_url = feed_url
+        if "exclude_flags=" in feed_url:
+            # Replace existing flags
+            flags_str = ",".join(current_flags)
+            parts = feed_url.split("exclude_flags=")
+            rest = parts[1].split("&", 1)
+            if len(rest) > 1:
+                new_url = f"{parts[0]}exclude_flags={flags_str}&{rest[1]}"
             else:
-                current_flags.append(flag)
-                action = "added to"
-            
-            # Create new URL with updated flags
-            new_url = current_feed_url
-            if current_flags:
-                # Replace or add flags parameter
-                flags_str = ",".join(current_flags)
-                if "exclude_flags=" in current_feed_url:
-                    parts = current_feed_url.split("exclude_flags=")
-                    rest = parts[1].split("&", 1)
-                    if len(rest) > 1:
-                        new_url = f"{parts[0]}exclude_flags={flags_str}&{rest[1]}"
-                    else:
-                        new_url = f"{parts[0]}exclude_flags={flags_str}"
-                else:
-                    # Add flags parameter
-                    if "?" in current_feed_url:
-                        new_url = f"{current_feed_url}&exclude_flags={flags_str}"
-                    else:
-                        new_url = f"{current_feed_url}?exclude_flags={flags_str}"
+                new_url = f"{parts[0]}exclude_flags={flags_str}"
+        else:
+            # Add flags parameter
+            flags_str = ",".join(current_flags)
+            if "?" in feed_url:
+                new_url = f"{feed_url}&exclude_flags={flags_str}"
             else:
-                # Remove flags parameter entirely
-                if "exclude_flags=" in current_feed_url:
-                    parts = current_feed_url.split("exclude_flags=")
-                    rest = parts[1].split("&", 1)
-                    if len(rest) > 1:
-                        new_url = f"{parts[0]}{rest[1]}"
-                    else:
-                        # Remove the query parameter separator if it's the only parameter
-                        new_url = parts[0].rstrip("?&")
-            
-            # Update feed URL
-            success, updated_url, _ = update_feed_url(feed_id, new_url)
-            
-            if not success:
-                await query.edit_message_text(
-                    f"Failed to update feed URL. Miniflux may be ignoring URL parameters.\n"
-                    f"Please update the URL manually in the Miniflux interface:\n"
-                    f"{new_url}"
-                )
-                return
-            
-            # Update keyboard with new flag status
-            channel_title = context.user_data.get("channel_title")
-            
-            # Create keyboard with management options
-            keyboard = [
-                [InlineKeyboardButton("Delete channel from subscriptions", callback_data="delete_feed")],
-            ]
-            
-            # Add flag buttons
-            available_flags = [
-                "fwd", "video", "stream", "donat", "clown", 
-                "poo", "advert", "link", "mention", "hid_channel", "foreign_channel"
-            ]
-            
-            # Extract updated flags from the updated URL
-            updated_flags = []
-            if "exclude_flags=" in updated_url:
-                flags_part = updated_url.split("exclude_flags=")[1].split("&")[0]
-                updated_flags = flags_part.split(",")
-            
-            # Create rows with 3 buttons each for flags
-            flag_buttons = []
-            row = []
-            
-            for available_flag in available_flags:
-                # Check if flag is set
-                is_set = available_flag in updated_flags
-                button_text = f"✅ {available_flag}" if is_set else f"➕ {available_flag}"
-                row.append(InlineKeyboardButton(button_text, callback_data=f"toggle_flag_{available_flag}"))
-                
-                # Create a new row after every 3 buttons
-                if len(row) == 3:
-                    flag_buttons.append(row)
-                    row = []
-            
-            # Add any remaining buttons
-            if row:
-                flag_buttons.append(row)
-            
-            # Add flag buttons to keyboard
-            keyboard.extend(flag_buttons)
-            
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text(
-                f"Flag '{flag}' {action} channel @{channel_title}.\nWhat would you like to do next?",
-                reply_markup=reply_markup
+                new_url = f"{feed_url}?exclude_flags={flags_str}"
+        
+        # Add logging before and after updating URL
+        logging.info(f"Original feed URL: {feed_url}")
+        logging.info(f"New feed URL: {new_url}")
+
+        # Update feed URL
+        success, updated_url, _ = update_feed_url(feed_id, new_url)
+        
+        if not success:
+            # If URL was not updated, show a message to the user
+            await update.message.reply_text(
+                f"Failed to update feed URL. Miniflux may be ignoring URL parameters.\n"
+                f"Please update the URL manually in the Miniflux interface:\n"
+                f"{new_url}"
             )
+            return
+        
+        # Extract updated flags from the updated URL
+        updated_flags = []
+        if "exclude_flags=" in updated_url:
+            flags_part = updated_url.split("exclude_flags=")[1].split("&")[0]
+            updated_flags = flags_part.split(",")
+        
+        # Display updated flags separated by spaces
+        flags_display = " ".join(updated_flags)
+        
+        await update.message.reply_text(
+            f"Added flag '{flag_to_add}' to channel @{channel_name}.\n"
+            f"Current flags: {flags_display}"
+        )
+        
+    except Exception as e:
+        logging.error(f"Failed to update feed: {e}", exc_info=True)
+        await update.message.reply_text(f"Failed to add flag: {str(e)}")
+
+async def remove_flag(update: Update, context: CallbackContext):
+    """
+    Handle the /remove_flag command.
+    Removes a flag from an existing channel subscription.
+    Format: /remove_flag channel_name flag_name
+    """
+    user = update.message.from_user
+    if not user or user.username != ADMIN_USERNAME:
+        logging.warning(f"Unauthorized access attempt from user: {user.username if user else 'Unknown'}")
+        await update.message.reply_text("Access denied. Only admin can use this bot.")
+        return
+    
+    # Check if command has correct arguments
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("Usage: /remove_flag channel_name flag_name")
+        return
+    
+    channel_name = context.args[0].lstrip('@')
+    flag_to_remove = context.args[1].strip()
+    
+    await update.message.chat.send_action("typing")
+    
+    try:
+        # Get all feeds
+        feeds = miniflux_client.get_feeds()
+        target_feed = None
+        
+        # Find the feed for the specified channel
+        for feed in feeds:
+            feed_url = feed.get("feed_url", "")
+            channel = extract_channel_from_feed_url(feed_url)
             
-        except Exception as error:
-            logging.error(f"Failed to toggle flag: {error}", exc_info=True)
-            await query.edit_message_text(f"Error changing flag: {str(error)}")
+            if channel and channel.lower() == channel_name.lower():
+                target_feed = feed
+                break
+        
+        if not target_feed:
+            await update.message.reply_text(f"Channel @{channel_name} not found in subscriptions.")
+            return
+        
+        # Get the most up-to-date feed data
+        feed_id = target_feed.get("id")
+        updated_target_feed = miniflux_client.get_feed(feed_id)
+        feed_url = updated_target_feed.get("feed_url", "")
+        
+        # Parse current flags
+        current_flags = []
+        if "exclude_flags=" in feed_url:
+            flags_part = feed_url.split("exclude_flags=")[1].split("&")[0]
+            current_flags = flags_part.split(",")
+        
+        # Check if flag exists
+        if flag_to_remove not in current_flags:
+            await update.message.reply_text(f"Flag '{flag_to_remove}' is not set for channel @{channel_name}.")
+            return
+        
+        # Remove flag
+        current_flags.remove(flag_to_remove)
+        
+        # Create new URL with updated flags
+        new_url = feed_url
+        if current_flags:
+            # Replace existing flags
+            flags_str = ",".join(current_flags)
+            parts = feed_url.split("exclude_flags=")
+            rest = parts[1].split("&", 1)
+            if len(rest) > 1:
+                new_url = f"{parts[0]}exclude_flags={flags_str}&{rest[1]}"
+            else:
+                new_url = f"{parts[0]}exclude_flags={flags_str}"
+        else:
+            # Remove flags parameter entirely
+            parts = feed_url.split("exclude_flags=")
+            rest = parts[1].split("&", 1)
+            if len(rest) > 1:
+                new_url = f"{parts[0]}{rest[1]}"
+            else:
+                # Remove the query parameter separator if it's the only parameter
+                new_url = parts[0].rstrip("?&")
+        
+        # Add logging before and after updating URL
+        logging.info(f"Original feed URL: {feed_url}")
+        logging.info(f"New feed URL: {new_url}")
+
+        # Update feed URL
+        success, updated_url, _ = update_feed_url(feed_id, new_url)
+        
+        if not success:
+            # If URL was not updated, show a message to the user
+            await update.message.reply_text(
+                f"Failed to update feed URL. Miniflux may be ignoring URL parameters.\n"
+                f"Please update the URL manually in the Miniflux interface:\n"
+                f"{new_url}"
+            )
+            return
+        
+        # Extract updated flags from the updated URL
+        updated_flags = []
+        if "exclude_flags=" in updated_url:
+            flags_part = updated_url.split("exclude_flags=")[1].split("&")[0]
+            updated_flags = flags_part.split(",")
+        
+        # Display updated flags separated by spaces
+        flags_display = " ".join(updated_flags) if updated_flags else "none"
+        
+        await update.message.reply_text(
+            f"Removed flag '{flag_to_remove}' from channel @{channel_name}.\n"
+            f"Current flags: {flags_display}"
+        )
+        
+    except Exception as e:
+        logging.error(f"Failed to update feed: {e}", exc_info=True)
+        await update.message.reply_text(f"Failed to remove flag: {str(e)}")
 
 def update_feed_url(feed_id, new_url):
     """
