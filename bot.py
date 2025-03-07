@@ -229,6 +229,12 @@ async def handle_message(update: Update, context: CallbackContext):
         await update.message.reply_text("Access denied. Only admin can use this bot.")
         return
 
+    # Check if this message is part of a media group we've already processed
+    media_group_id = msg.media_group_id
+    if media_group_id and context.user_data.get("processed_media_group_id") == media_group_id:
+        logging.info(f"Skipping duplicate message from media group {media_group_id}")
+        return
+    
     msg_dict = msg.to_dict()
     logging.info(f"Message details:\n{json.dumps(msg_dict, indent=4)}")
 
@@ -242,6 +248,11 @@ async def handle_message(update: Update, context: CallbackContext):
         logging.info(f"Forwarded message is from {forward_chat['type']}, not from channel")
         await update.message.reply_text("Please forward a message from a channel, not from other source.")
         return
+
+    # If this is part of a media group, mark it as processed
+    if media_group_id:
+        context.user_data["processed_media_group_id"] = media_group_id
+        logging.info(f"Processing first message from media group {media_group_id}")
 
     logging.info(f"ACCEPT_CHANNELS_WITOUT_USERNAME={ACCEPT_CHANNELS_WITOUT_USERNAME}, username={forward_chat.get('username')}")
     accept_no_username = ACCEPT_CHANNELS_WITOUT_USERNAME.lower() == "true"
