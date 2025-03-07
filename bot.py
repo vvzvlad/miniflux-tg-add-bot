@@ -418,7 +418,7 @@ async def add_flag(update: Update, context: CallbackContext):
         logging.info(f"New feed URL: {new_url}")
 
         # Update feed URL
-        success, updated_url, _ = update_feed_url(feed_id, target_feed, new_url)
+        success, updated_url, _ = update_feed_url(feed_id, new_url)
         
         if not success:
             # If URL was not updated, show a message to the user
@@ -532,7 +532,7 @@ async def remove_flag(update: Update, context: CallbackContext):
         logging.info(f"New feed URL: {new_url}")
 
         # Update feed URL
-        success, updated_url, _ = update_feed_url(feed_id, target_feed, new_url)
+        success, updated_url, _ = update_feed_url(feed_id, new_url)
         
         if not success:
             # If URL was not updated, show a message to the user
@@ -561,13 +561,12 @@ async def remove_flag(update: Update, context: CallbackContext):
         logging.error(f"Failed to update feed: {e}", exc_info=True)
         await update.message.reply_text(f"Failed to remove flag: {str(e)}")
 
-def update_feed_url(feed_id, target_feed, new_url):
+def update_feed_url(feed_id, new_url):
     """
     Update feed URL in Miniflux.
     
     Args:
         feed_id: ID of the feed to update
-        target_feed: Feed data dictionary
         new_url: New URL to set for the feed
         
     Returns:
