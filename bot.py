@@ -563,7 +563,7 @@ async def remove_flag(update: Update, context: CallbackContext):
 
 def update_feed_url(feed_id, target_feed, new_url):
     """
-    Update feed URL in Miniflux using direct API request.
+    Update feed URL in Miniflux.
     
     Args:
         feed_id: ID of the feed to update
@@ -574,36 +574,8 @@ def update_feed_url(feed_id, target_feed, new_url):
         tuple: (success, updated_url, response_text)
     """
     try:
-        # Create headers for the request
-        headers = {
-            "Content-Type": "application/json"
-        }
-
-        # Use basic authentication
-        auth = (MINIFLUX_USERNAME, MINIFLUX_PASSWORD)
-        
-        # Create data for the request
-        data = {
-            "feed_url": new_url,
-            # Add all other fields from the current feed to avoid losing them
-            "site_url": target_feed.get("site_url", ""),
-            "title": target_feed.get("title", ""),
-            "category_id": target_feed.get("category", {}).get("id"),
-            "crawler": target_feed.get("crawler", False),
-            "user_agent": target_feed.get("user_agent", ""),
-            "username": target_feed.get("username", ""),
-            "password": target_feed.get("password", "")
-        }
-        
-        # Send PUT request directly
-        api_url = f"{MINIFLUX_BASE_URL.rstrip('/')}/v1/feeds/{feed_id}"
-        logging.info(f"Sending PUT request to {api_url} with data: {data}")
-        
-        response = requests.put(api_url, json=data, headers=headers, auth=auth, timeout=10)
-        response.raise_for_status()  # Will raise an exception if status is not 2xx
-        
-        response_text = response.text
-        logging.info(f"API response: {response.status_code} - {response_text}")
+        # Update feed with new URL
+        miniflux_client.update_feed(feed_id=feed_id, feed_url=new_url)
         
         # Get the updated feed
         updated_feed = miniflux_client.get_feed(feed_id)
@@ -613,10 +585,10 @@ def update_feed_url(feed_id, target_feed, new_url):
         # Check if the URL was updated
         if updated_url == new_url:
             logging.info(f"URL successfully updated to: {updated_url}")
-            return True, updated_url, response_text
+            return True, updated_url, ""
         else:
             logging.error(f"URL update failed! Expected: {new_url}, Got: {updated_url}")
-            return False, updated_url, response_text
+            return False, updated_url, ""
             
     except Exception as e:
         logging.error(f"Failed to update feed: {e}", exc_info=True)
