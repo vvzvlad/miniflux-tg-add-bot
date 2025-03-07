@@ -271,7 +271,42 @@ async def handle_message(update: Update, context: CallbackContext):
     try:
         if check_feed_exists(miniflux_client, feed_url):
             logging.info(f"Channel @{channel_username} is already in subscriptions")
-            await update.message.reply_text(f"Channel @{channel_username} is already in subscriptions.")
+            
+            # Create keyboard with flag options
+            keyboard = [
+                [
+                    InlineKeyboardButton("Add flag: fwd", callback_data=f"add_flag_{channel_username}_fwd"),
+                    InlineKeyboardButton("Add flag: video", callback_data=f"add_flag_{channel_username}_video")
+                ],
+                [
+                    InlineKeyboardButton("Add flag: stream", callback_data=f"add_flag_{channel_username}_stream"),
+                    InlineKeyboardButton("Add flag: donat", callback_data=f"add_flag_{channel_username}_donat")
+                ],
+                [
+                    InlineKeyboardButton("Add flag: clown", callback_data=f"add_flag_{channel_username}_clown"),
+                    InlineKeyboardButton("Add flag: poo", callback_data=f"add_flag_{channel_username}_poo")
+                ],
+                [
+                    InlineKeyboardButton("Add flag: advert", callback_data=f"add_flag_{channel_username}_advert"),
+                    InlineKeyboardButton("Add flag: link", callback_data=f"add_flag_{channel_username}_link")
+                ],
+                [
+                    InlineKeyboardButton("Add flag: mention", callback_data=f"add_flag_{channel_username}_mention"),
+                    InlineKeyboardButton("Add flag: hid_channel", callback_data=f"add_flag_{channel_username}_hid_channel")
+                ],
+                [
+                    InlineKeyboardButton("Add flag: foreign_channel", callback_data=f"add_flag_{channel_username}_foreign_channel")
+                ],
+                [
+                    InlineKeyboardButton("Delete channel", callback_data=f"delete_{channel_username}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                f"Channel @{channel_username} is already in subscriptions. Choose an action:",
+                reply_markup=reply_markup
+            )
             return
     except Exception as error:
         logging.error(f"Failed to check subscriptions: {error}")
@@ -303,11 +338,12 @@ async def handle_message(update: Update, context: CallbackContext):
 
 async def button_callback(update: Update, context: CallbackContext):
     """
-    Handle callback query when user selects a category.
+    Handle callback query when user selects a category or flag action.
     """
     query = update.callback_query
     await query.answer()
     data = query.data
+    
     if data.startswith("cat_"):
         cat_id_str = data.split("_", 1)[1]
         try:
@@ -345,29 +381,77 @@ async def button_callback(update: Update, context: CallbackContext):
         except Exception as error:
             logging.error(f"Unexpected error while subscribing to feed '{feed_url}': {str(error)}", exc_info=True)
             await query.edit_message_text(f"Unexpected error while subscribing to RSS feed: {str(error)}")
+    
+    elif data.startswith("add_flag_"):
+        # Handle add flag button
+        parts = data.split("_", 3)
+        if len(parts) < 4:
+            await query.edit_message_text("Invalid flag data.")
+            return
+        
+        channel_name = parts[2]
+        flag_name = parts[3]
+        
+        # Call the shared function for adding flags
+        success, message, updated_flags = await add_flag_to_channel(channel_name, flag_name)
+        
+        if success:
+            # Create keyboard with remaining flag options
+            keyboard = create_flag_keyboard(channel_name, updated_flags)
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                f"{message}\n\nChoose another action:",
+                reply_markup=reply_markup
+            )
+        else:
+            await query.edit_message_text(message)
+    
+    elif data.startswith("delete_"):
+        # Handle delete channel button
+        channel_name = data.split("_", 1)[1]
+        
+        try:
+            # Get all feeds
+            feeds = miniflux_client.get_feeds()
+            target_feed = None
+            
+            # Find the feed for the specified channel
+            for feed in feeds:
+                feed_url = feed.get("feed_url", "")
+                channel = extract_channel_from_feed_url(feed_url)
+                
+                if channel and channel.lower() == channel_name.lower():
+                    target_feed = feed
+                    break
+            
+            if not target_feed:
+                await query.edit_message_text(f"Channel @{channel_name} not found in subscriptions.")
+                return
+            
+            # Get the feed ID
+            feed_id = target_feed.get("id")
+            
+            # Delete the feed
+            miniflux_client.delete_feed(feed_id)
+            
+            await query.edit_message_text(f"Channel @{channel_name} has been deleted from subscriptions.")
+            
+        except Exception as e:
+            logging.error(f"Failed to delete feed: {e}", exc_info=True)
+            await query.edit_message_text(f"Failed to delete channel: {str(e)}")
 
-async def add_flag(update: Update, context: CallbackContext):
+async def add_flag_to_channel(channel_name, flag_to_add):
     """
-    Handle the /add_flag command.
-    Adds a new flag to an existing channel subscription.
-    Format: /add_flag channel_name flag_name
+    Add a flag to a channel subscription.
+    
+    Args:
+        channel_name: Channel username or ID
+        flag_to_add: Flag to add
+        
+    Returns:
+        tuple: (success, message, updated_flags)
     """
-    user = update.message.from_user
-    if not user or user.username != ADMIN_USERNAME:
-        logging.warning(f"Unauthorized access attempt from user: {user.username if user else 'Unknown'}")
-        await update.message.reply_text("Access denied. Only admin can use this bot.")
-        return
-    
-    # Check if command has correct arguments
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text("Usage: /add_flag channel_name flag_name")
-        return
-    
-    channel_name = context.args[0].lstrip('@')
-    flag_to_add = context.args[1].strip()
-    
-    await update.message.chat.send_action("typing")
-    
     try:
         # Get all feeds
         feeds = miniflux_client.get_feeds()
@@ -383,8 +467,7 @@ async def add_flag(update: Update, context: CallbackContext):
                 break
         
         if not target_feed:
-            await update.message.reply_text(f"Channel @{channel_name} not found in subscriptions.")
-            return
+            return False, f"Channel @{channel_name} not found in subscriptions.", []
         
         # Get the most up-to-date feed data
         feed_id = target_feed.get("id")
@@ -399,8 +482,7 @@ async def add_flag(update: Update, context: CallbackContext):
         
         # Check if flag already exists
         if flag_to_add in current_flags:
-            await update.message.reply_text(f"Flag '{flag_to_add}' is already set for channel @{channel_name}.")
-            return
+            return False, f"Flag '{flag_to_add}' is already set for channel @{channel_name}.", current_flags
         
         # Add new flag
         current_flags.append(flag_to_add)
@@ -432,13 +514,7 @@ async def add_flag(update: Update, context: CallbackContext):
         success, updated_url, _ = update_feed_url(feed_id, new_url)
         
         if not success:
-            # If URL was not updated, show a message to the user
-            await update.message.reply_text(
-                f"Failed to update feed URL. Miniflux may be ignoring URL parameters.\n"
-                f"Please update the URL manually in the Miniflux interface:\n"
-                f"{new_url}"
-            )
-            return
+            return False, f"Failed to update feed URL. Miniflux may be ignoring URL parameters.\nPlease update the URL manually in the Miniflux interface:\n{new_url}", []
         
         # Extract updated flags from the updated URL
         updated_flags = []
@@ -449,37 +525,23 @@ async def add_flag(update: Update, context: CallbackContext):
         # Display updated flags separated by spaces
         flags_display = " ".join(updated_flags)
         
-        await update.message.reply_text(
-            f"Added flag '{flag_to_add}' to channel @{channel_name}.\n"
-            f"Current flags: {flags_display}"
-        )
+        return True, f"Added flag '{flag_to_add}' to channel @{channel_name}.\nCurrent flags: {flags_display}", updated_flags
         
     except Exception as e:
         logging.error(f"Failed to update feed: {e}", exc_info=True)
-        await update.message.reply_text(f"Failed to add flag: {str(e)}")
+        return False, f"Failed to add flag: {str(e)}", []
 
-async def remove_flag(update: Update, context: CallbackContext):
+async def remove_flag_from_channel(channel_name, flag_to_remove):
     """
-    Handle the /remove_flag command.
-    Removes a flag from an existing channel subscription.
-    Format: /remove_flag channel_name flag_name
+    Remove a flag from a channel subscription.
+    
+    Args:
+        channel_name: Channel username or ID
+        flag_to_remove: Flag to remove
+        
+    Returns:
+        tuple: (success, message, updated_flags)
     """
-    user = update.message.from_user
-    if not user or user.username != ADMIN_USERNAME:
-        logging.warning(f"Unauthorized access attempt from user: {user.username if user else 'Unknown'}")
-        await update.message.reply_text("Access denied. Only admin can use this bot.")
-        return
-    
-    # Check if command has correct arguments
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text("Usage: /remove_flag channel_name flag_name")
-        return
-    
-    channel_name = context.args[0].lstrip('@')
-    flag_to_remove = context.args[1].strip()
-    
-    await update.message.chat.send_action("typing")
-    
     try:
         # Get all feeds
         feeds = miniflux_client.get_feeds()
@@ -495,8 +557,7 @@ async def remove_flag(update: Update, context: CallbackContext):
                 break
         
         if not target_feed:
-            await update.message.reply_text(f"Channel @{channel_name} not found in subscriptions.")
-            return
+            return False, f"Channel @{channel_name} not found in subscriptions.", []
         
         # Get the most up-to-date feed data
         feed_id = target_feed.get("id")
@@ -511,8 +572,7 @@ async def remove_flag(update: Update, context: CallbackContext):
         
         # Check if flag exists
         if flag_to_remove not in current_flags:
-            await update.message.reply_text(f"Flag '{flag_to_remove}' is not set for channel @{channel_name}.")
-            return
+            return False, f"Flag '{flag_to_remove}' is not set for channel @{channel_name}.", current_flags
         
         # Remove flag
         current_flags.remove(flag_to_remove)
@@ -546,13 +606,7 @@ async def remove_flag(update: Update, context: CallbackContext):
         success, updated_url, _ = update_feed_url(feed_id, new_url)
         
         if not success:
-            # If URL was not updated, show a message to the user
-            await update.message.reply_text(
-                f"Failed to update feed URL. Miniflux may be ignoring URL parameters.\n"
-                f"Please update the URL manually in the Miniflux interface:\n"
-                f"{new_url}"
-            )
-            return
+            return False, f"Failed to update feed URL. Miniflux may be ignoring URL parameters.\nPlease update the URL manually in the Miniflux interface:\n{new_url}", []
         
         # Extract updated flags from the updated URL
         updated_flags = []
@@ -563,14 +617,47 @@ async def remove_flag(update: Update, context: CallbackContext):
         # Display updated flags separated by spaces
         flags_display = " ".join(updated_flags) if updated_flags else "none"
         
-        await update.message.reply_text(
-            f"Removed flag '{flag_to_remove}' from channel @{channel_name}.\n"
-            f"Current flags: {flags_display}"
-        )
+        return True, f"Removed flag '{flag_to_remove}' from channel @{channel_name}.\nCurrent flags: {flags_display}", updated_flags
         
     except Exception as e:
         logging.error(f"Failed to update feed: {e}", exc_info=True)
-        await update.message.reply_text(f"Failed to remove flag: {str(e)}")
+        return False, f"Failed to remove flag: {str(e)}", []
+
+def create_flag_keyboard(channel_name, current_flags):
+    """
+    Create keyboard with flag options, excluding already set flags.
+    
+    Args:
+        channel_name: Channel username
+        current_flags: List of currently set flags
+        
+    Returns:
+        list: Keyboard buttons
+    """
+    all_flags = [
+        "fwd", "video", "stream", "donat", "clown", "poo", 
+        "advert", "link", "mention", "hid_channel", "foreign_channel"
+    ]
+    
+    # Filter out flags that are already set
+    available_flags = [flag for flag in all_flags if flag not in current_flags]
+    
+    # Create keyboard
+    keyboard = []
+    row = []
+    
+    for i, flag in enumerate(available_flags):
+        row.append(InlineKeyboardButton(f"Add flag: {flag}", callback_data=f"add_flag_{channel_name}_{flag}"))
+        
+        # Add 2 buttons per row
+        if len(row) == 2 or i == len(available_flags) - 1:
+            keyboard.append(row)
+            row = []
+    
+    # Add delete button at the bottom
+    keyboard.append([InlineKeyboardButton("Delete channel", callback_data=f"delete_{channel_name}")])
+    
+    return keyboard
 
 def update_feed_url(feed_id, new_url):
     """
@@ -603,6 +690,58 @@ def update_feed_url(feed_id, new_url):
     except Exception as e:
         logging.error(f"Failed to update feed: {e}", exc_info=True)
         raise
+
+async def add_flag(update: Update, context: CallbackContext):
+    """
+    Handle the /add_flag command.
+    Adds a new flag to an existing channel subscription.
+    Format: /add_flag channel_name flag_name
+    """
+    user = update.message.from_user
+    if not user or user.username != ADMIN_USERNAME:
+        logging.warning(f"Unauthorized access attempt from user: {user.username if user else 'Unknown'}")
+        await update.message.reply_text("Access denied. Only admin can use this bot.")
+        return
+    
+    # Check if command has correct arguments
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("Usage: /add_flag channel_name flag_name")
+        return
+    
+    channel_name = context.args[0].lstrip('@')
+    flag_to_add = context.args[1].strip()
+    
+    await update.message.chat.send_action("typing")
+    
+    # Call the shared function for adding flags
+    success, message, _ = await add_flag_to_channel(channel_name, flag_to_add)
+    await update.message.reply_text(message)
+
+async def remove_flag(update: Update, context: CallbackContext):
+    """
+    Handle the /remove_flag command.
+    Removes a flag from an existing channel subscription.
+    Format: /remove_flag channel_name flag_name
+    """
+    user = update.message.from_user
+    if not user or user.username != ADMIN_USERNAME:
+        logging.warning(f"Unauthorized access attempt from user: {user.username if user else 'Unknown'}")
+        await update.message.reply_text("Access denied. Only admin can use this bot.")
+        return
+    
+    # Check if command has correct arguments
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("Usage: /remove_flag channel_name flag_name")
+        return
+    
+    channel_name = context.args[0].lstrip('@')
+    flag_to_remove = context.args[1].strip()
+    
+    await update.message.chat.send_action("typing")
+    
+    # Call the shared function for removing flags
+    success, message, _ = await remove_flag_from_channel(channel_name, flag_to_remove)
+    await update.message.reply_text(message)
 
 def main():
     """
