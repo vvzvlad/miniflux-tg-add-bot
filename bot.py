@@ -410,21 +410,21 @@ async def handle_message(update: Update, context: CallbackContext):
                     if 'exclude_flags' in query_params_after:
                         current_flags_after_regex = query_params_after['exclude_flags'][0].split(',')
 
-                    keyboard = create_flag_keyboard(channel_name, current_flags_after_regex)
+                    keyboard = create_flag_keyboard(channel_username, current_flags_after_regex)
                     reply_markup = InlineKeyboardMarkup(keyboard)
-                    await update.message.reply_text(f"Updated options for @{channel_name}:", reply_markup=reply_markup)
-                    logging.info(f"Displayed updated options keyboard for {channel_name} after regex update.")
+                    await update.message.reply_text(f"Updated options for @{channel_username}:", reply_markup=reply_markup)
+                    logging.info(f"Displayed updated options keyboard for {channel_username} after regex update.")
 
                 except Exception as e_flags:
-                    logging.error(f"Failed to fetch flags/show keyboard after regex update for {channel_name}: {e_flags}")
+                    logging.error(f"Failed to fetch flags/show keyboard after regex update for {channel_username}: {e_flags}")
                     # Non-critical error, just log it. The main update succeeded.
 
             else:
-                logging.error(f"Failed to update feed URL for {channel_name} (feed ID: {feed_id}) with new regex. Error: {error_message}. Attempted URL: {new_url}")
-                await update.message.reply_text(f"Failed to update regex for channel @{channel_name}. Miniflux error: {error_message}")
+                logging.error(f"Failed to update feed URL for {channel_username} (feed ID: {feed_id}) with new regex. Error: {error_message}. Attempted URL: {new_url}")
+                await update.message.reply_text(f"Failed to update regex for channel @{channel_username}. Miniflux error: {error_message}")
 
         except Exception as e:
-            logging.error(f"Error processing new regex for {channel_name}: {e}", exc_info=True)
+            logging.error(f"Error processing new regex for {channel_username}: {e}", exc_info=True)
             await update.message.reply_text(f"An unexpected error occurred while updating the regex: {str(e)}")
 
         return # Important: Stop processing after handling the state
@@ -479,7 +479,7 @@ async def handle_message(update: Update, context: CallbackContext):
                 current_flags = [] # Proceed without flag status if fetch fails
 
             # Create keyboard with current flag statuses
-            keyboard = create_flag_keyboard(channel_name, current_flags)
+            keyboard = create_flag_keyboard(channel_username, current_flags)
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             await update.message.reply_text(
