@@ -763,15 +763,13 @@ async def button_callback(update: Update, context: CallbackContext):
             # Prepare message asking for new regex
             prompt_message = ""
             if current_regex:
-                 # Escape characters for MarkdownV2
-                 safe_regex = current_regex.replace('\\', '\\\\').replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('~', '\\~').replace('`', '\\`').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!')
-                 prompt_message = f"Current regex for @{channel_name} is:\\n`{safe_regex}`\\n\\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
+                 prompt_message = f"Current regex for @{channel_name} is:\n{current_regex}\n\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
             else:
-                 prompt_message = f"No current regex set for @{channel_name}.\\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
+                 prompt_message = f"No current regex set for @{channel_name}.\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
 
             # Edit the original message with the prompt
             # Important: We edit the message from the *button callback* context (query.message)
-            await query.edit_message_text(prompt_message, parse_mode='MarkdownV2') # Use MarkdownV2
+            await query.edit_message_text(prompt_message)
 
         except Exception as e:
             logging.error(f"Failed during edit_regex preparation for {channel_name}: {e}", exc_info=True)
