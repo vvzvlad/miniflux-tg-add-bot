@@ -38,12 +38,11 @@ def parse_telegram_link(text: str) -> str | None:
 
     # Regex to find t.me URLs
     # Handles optional https://, t.me domain, channel name (alphanumeric/underscore), message ID (numeric)
-    match = re.search(r"(?:https?://)?t\\.me/([a-zA-Z0-9_]+)/(\\d+)", text) # Escaped . and d
+    match = re.search(r"(?:https?://)?t\.me/([a-zA-Z0-9_]+)/\d+", text)
 
     if match:
         channel_name = match.group(1)
-        message_id = match.group(2) # We don't use message_id, but capture it
-        logging.info(f"Parsed Telegram link: channel='{channel_name}', message_id='{message_id}'")
+        logging.info(f"Parsed Telegram link: channel='{channel_name}'")
         return channel_name
     else:
         logging.debug(f"No valid t.me link found in text: '{text}'")
@@ -273,15 +272,21 @@ async def handle_message(update: Update, context: CallbackContext):
     channel_source_type = None # 'forward' or 'link'
 
     # 1. Check for forward
-    forward_chat = getattr(msg, 'forward_from_chat', None)
-    if forward_chat and forward_chat.type == "channel":
-        logging.info(f"Processing forwarded message from channel: {forward_chat.username or forward_chat.id}") # Use attributes
+    forward_chat = msg_dict.get("forward_from_chat")
+    if forward_chat:
+        if forward_chat["type"] != "channel":
+            logging.info(f"Forwarded message is from {forward_chat['type']}, not from channel")
+            await update.message.reply_text("Please forward a message from a channel, not from other source.")
+            return
+
+        logging.info(f"Processing forwarded message from channel: {forward_chat.get('username') or forward_chat.get('id')}")
         accept_no_username = ACCEPT_CHANNELS_WITOUT_USERNAME.lower() == "true"
-        if not forward_chat.username and not accept_no_username: # Use attribute
-             logging.error(f"Channel {forward_chat.title} has no username") # Use attribute
-             await update.message.reply_text("Error: channel must have a public username to subscribe. \\nUse env ACCEPT_CHANNELS_WITOUT_USERNAME=true to accept channels without username (need support from RSS bridge).") # Escaped newline
-             return
-        channel_username = forward_chat.username or str(forward_chat.id) # Use attributes
+        if not forward_chat.get("username") and not accept_no_username:
+            logging.error(f"Channel {forward_chat['title']} has no username")
+            await update.message.reply_text("Error: channel must have a public username to subscribe. \nUse env ACCEPT_CHANNELS_WITOUT_USERNAME=true to accept channels without username (need support from RSS bridge).")
+            return
+
+        channel_username = forward_chat.get("username") or str(forward_chat.get("id"))
         channel_source_type = 'forward'
         # If this is part of a media group from a forward, mark it as processed
         if media_group_id:
@@ -293,15 +298,12 @@ async def handle_message(update: Update, context: CallbackContext):
         parsed_channel = parse_telegram_link(msg.text)
         if parsed_channel:
             logging.info(f"Processing link to message from channel: {parsed_channel}")
-            # Here we assume public channels linked will have usernames discoverable by RSS Bridge.
-            # Handling private channels or those without usernames via links might require different logic or fail at the bridge level.
             channel_username = parsed_channel
             channel_source_type = 'link'
-             # If this is part of a media group from a link, mark it as processed
+            # If this is part of a media group from a link, mark it as processed
             if media_group_id:
-                 context.user_data["processed_media_group_id"] = media_group_id
-                 logging.info(f"Processing first linked message from media group {media_group_id}")
-
+                context.user_data["processed_media_group_id"] = media_group_id
+                logging.info(f"Processing first linked message from media group {media_group_id}")
 
     # 3. If neither forward nor valid link
     if not channel_username:
