@@ -347,7 +347,7 @@ async def handle_message(update: Update, context: CallbackContext):
 
                     keyboard = create_flag_keyboard(channel_name, current_flags_after_regex)
                     reply_markup = InlineKeyboardMarkup(keyboard)
-                    await update.message.reply_text(f"Updated options for @{channel_name}:", reply_markup=reply_markup)
+                    await update.message.reply_text(f"Updated options for @{channel_name}. Choose an action:", reply_markup=reply_markup)
                     logging.info(f"Displayed updated options keyboard for {channel_name} after regex update.")
 
                 except Exception as e_flags:
