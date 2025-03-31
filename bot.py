@@ -313,26 +313,10 @@ async def handle_message(update: Update, context: CallbackContext):
                     del query_params['exclude_text']
                     logging.info(f"Removing exclude_text parameter for {channel_name} due to empty input.")
 
-            # Rebuild the URL
-            # Handle exclude_flags separately to preserve commas
-            flags_param = ""
-            if 'exclude_flags' in query_params:
-                flags = query_params['exclude_flags'][0]
-                del query_params['exclude_flags']
-                if flags:
-                    flags_param = f"exclude_flags={flags}"
-
-            # Handle other parameters
-            other_params = urllib.parse.urlencode(query_params, doseq=True)
-            
-            # Combine parameters
-            new_query_string = ""
-            if flags_param and other_params:
-                new_query_string = f"{flags_param}&{other_params}"
-            elif flags_param:
-                new_query_string = flags_param
-            else:
-                new_query_string = other_params
+            # Rebuild the URL (Simplified approach)
+            # Re-encode the entire query string correctly after modifications
+            # doseq=True handles multiple values for a key properly
+            new_query_string = urllib.parse.urlencode(query_params, doseq=True)
 
             new_url = urllib.parse.urlunparse((
                 parsed_url.scheme,
@@ -761,15 +745,19 @@ async def button_callback(update: Update, context: CallbackContext):
             # Prepare message asking for new regex
             prompt_message = ""
             if current_regex:
-                 # URL-decode the regex before displaying
-                 decoded_regex = urllib.parse.unquote(current_regex)
-                 prompt_message = f"Current regex for @{channel_name} is:\n{decoded_regex}\n\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
+                 # The regex from parse_qs is already decoded, no need to unquote again
+                 # Escape potentially problematic characters for display in Telegram
+                 # Note: This is a basic escape for display, not for regex validity itself
+                 # Use backticks for code formatting in MarkdownV2
+                 escaped_regex_for_display = current_regex.replace('`', '\`')
+                 prompt_message = f"Current regex for @{channel_name} is:\n`{escaped_regex_for_display}`\n\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
             else:
                  prompt_message = f"No current regex set for @{channel_name}.\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
 
             # Edit the original message with the prompt
             # Important: We edit the message from the *button callback* context (query.message)
-            await query.edit_message_text(prompt_message)
+            # Use MarkdownV2 for backticks
+            await query.edit_message_text(prompt_message, parse_mode='MarkdownV2')
 
         except Exception as e:
             logging.error(f"Failed during edit_regex preparation for {channel_name}: {e}", exc_info=True)
