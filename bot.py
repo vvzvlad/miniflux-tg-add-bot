@@ -270,47 +270,54 @@ async def handle_message(update: Update, context: CallbackContext):
     
     await update.message.chat.send_action("typing")
     try:
-        if check_feed_exists(miniflux_client, feed_url):
+        feeds = miniflux_client.get_feeds()
+        target_feed = None
+        for feed in feeds:
+            feed_url_check = feed.get("feed_url", "")
+            # Simple check first
+            if feed_url == feed_url_check:
+                 target_feed = feed
+                 break
+            # Check ignoring query parameters if simple check failed
+            parsed_target = urllib.parse.urlparse(feed_url)
+            parsed_check = urllib.parse.urlparse(feed_url_check)
+            if parsed_target.scheme == parsed_check.scheme and \
+               parsed_target.netloc == parsed_check.netloc and \
+               parsed_target.path == parsed_check.path:
+                target_feed = feed
+                break
+        
+        if target_feed:
             logging.info(f"Channel @{channel_username} is already in subscriptions")
             
-            # Create keyboard with flag options
-            keyboard = [
-                [
-                    InlineKeyboardButton("Add flag: fwd", callback_data=f"add_flag|{channel_username}|fwd"),
-                    InlineKeyboardButton("Add flag: video", callback_data=f"add_flag|{channel_username}|video")
-                ],
-                [
-                    InlineKeyboardButton("Add flag: stream", callback_data=f"add_flag|{channel_username}|stream"),
-                    InlineKeyboardButton("Add flag: donat", callback_data=f"add_flag|{channel_username}|donat")
-                ],
-                [
-                    InlineKeyboardButton("Add flag: clown", callback_data=f"add_flag|{channel_username}|clown"),
-                    InlineKeyboardButton("Add flag: poo", callback_data=f"add_flag|{channel_username}|poo")
-                ],
-                [
-                    InlineKeyboardButton("Add flag: advert", callback_data=f"add_flag|{channel_username}|advert"),
-                    InlineKeyboardButton("Add flag: link", callback_data=f"add_flag|{channel_username}|link")
-                ],
-                [
-                    InlineKeyboardButton("Add flag: mention", callback_data=f"add_flag|{channel_username}|mention"),
-                    InlineKeyboardButton("Add flag: hid_channel", callback_data=f"add_flag|{channel_username}|hid_channel")
-                ],
-                [
-                    InlineKeyboardButton("Add flag: foreign_channel", callback_data=f"add_flag|{channel_username}|foreign_channel")
-                ],
-                [
-                    InlineKeyboardButton("Delete channel", callback_data=f"delete|{channel_username}")
-                ]
-            ]
+            # Fetch current flags for the existing feed
+            feed_id = target_feed.get("id")
+            try:
+                # Get the most up-to-date feed data to ensure flags are current
+                updated_target_feed = miniflux_client.get_feed(feed_id)
+                feed_url_current = updated_target_feed.get("feed_url", "")
+                current_flags = []
+                if "exclude_flags=" in feed_url_current:
+                    flags_part = feed_url_current.split("exclude_flags=")[1].split("&")[0]
+                    current_flags = flags_part.split(",")
+                logging.info(f"Current flags for @{channel_username}: {current_flags}")
+            except Exception as e:
+                logging.error(f"Failed to fetch current flags for feed {feed_id}: {e}")
+                await update.message.reply_text("Error fetching current flag status. Proceeding without status.")
+                current_flags = [] # Proceed without flag status if fetch fails
+
+            # Create keyboard with current flag statuses
+            keyboard = create_flag_keyboard(channel_username, current_flags)
             reply_markup = InlineKeyboardMarkup(keyboard)
-            
+
             await update.message.reply_text(
                 f"Channel @{channel_username} is already in subscriptions. Choose an action:",
                 reply_markup=reply_markup
             )
             return
+            
     except Exception as error:
-        logging.error(f"Failed to check subscriptions: {error}")
+        logging.error(f"Failed to check subscriptions or get existing feed details: {error}", exc_info=True)
         await update.message.reply_text("Failed to check existing subscriptions.")
         return
 
@@ -389,25 +396,108 @@ async def button_callback(update: Update, context: CallbackContext):
         if len(parts) < 3:
             await query.edit_message_text("Invalid flag data.")
             return
-        
+
         channel_name = parts[1]
         flag_name = parts[2]
-        
+
         # Call the shared function for adding flags
         success, message, updated_flags = await add_flag_to_channel(channel_name, flag_name)
-        
+
         if success:
-            # Create keyboard with remaining flag options
+            # Create keyboard with updated flag statuses
             keyboard = create_flag_keyboard(channel_name, updated_flags)
             reply_markup = InlineKeyboardMarkup(keyboard)
-            
+
             await query.edit_message_text(
-                f"{message}\n\nChoose another action:",
+                f"{message}\n\nChoose an action:",
                 reply_markup=reply_markup
             )
         else:
-            await query.edit_message_text(message)
-    
+            # If adding failed (e.g., already exists), still show the current state
+            # Fetch current flags again in case of race conditions or errors
+            try:
+                feeds = miniflux_client.get_feeds()
+                target_feed = None
+                for feed in feeds:
+                    feed_url = feed.get("feed_url", "")
+                    channel = extract_channel_from_feed_url(feed_url)
+                    if channel and channel.lower() == channel_name.lower():
+                        target_feed = feed
+                        break
+                
+                current_flags = []
+                if target_feed:
+                    feed_id = target_feed.get("id")
+                    updated_target_feed = miniflux_client.get_feed(feed_id)
+                    feed_url = updated_target_feed.get("feed_url", "")
+                    if "exclude_flags=" in feed_url:
+                        flags_part = feed_url.split("exclude_flags=")[1].split("&")[0]
+                        current_flags = flags_part.split(",")
+                
+                keyboard = create_flag_keyboard(channel_name, current_flags)
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    f"{message}\n\nChoose an action:", 
+                    reply_markup=reply_markup
+                )
+            except Exception as e:
+                logging.error(f"Error refreshing keyboard after failed flag add: {e}")
+                await query.edit_message_text(message) # Show original error message
+
+    elif data.startswith("remove_flag|"):
+        # Handle remove flag button
+        parts = data.split("|")
+        if len(parts) < 3:
+            await query.edit_message_text("Invalid flag data.")
+            return
+
+        channel_name = parts[1]
+        flag_name = parts[2]
+
+        # Call the shared function for removing flags
+        success, message, updated_flags = await remove_flag_from_channel(channel_name, flag_name)
+
+        if success:
+            # Create keyboard with updated flag statuses
+            keyboard = create_flag_keyboard(channel_name, updated_flags)
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(
+                f"{message}\n\nChoose an action:",
+                reply_markup=reply_markup
+            )
+        else:
+            # If removing failed (e.g., doesn't exist), still show the current state
+            # Fetch current flags again
+            try:
+                feeds = miniflux_client.get_feeds()
+                target_feed = None
+                for feed in feeds:
+                    feed_url = feed.get("feed_url", "")
+                    channel = extract_channel_from_feed_url(feed_url)
+                    if channel and channel.lower() == channel_name.lower():
+                        target_feed = feed
+                        break
+                
+                current_flags = []
+                if target_feed:
+                    feed_id = target_feed.get("id")
+                    updated_target_feed = miniflux_client.get_feed(feed_id)
+                    feed_url = updated_target_feed.get("feed_url", "")
+                    if "exclude_flags=" in feed_url:
+                        flags_part = feed_url.split("exclude_flags=")[1].split("&")[0]
+                        current_flags = flags_part.split(",")
+                
+                keyboard = create_flag_keyboard(channel_name, current_flags)
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    f"{message}\n\nChoose an action:", 
+                    reply_markup=reply_markup
+                )
+            except Exception as e:
+                logging.error(f"Error refreshing keyboard after failed flag remove: {e}")
+                await query.edit_message_text(message) # Show original error message
+
     elif data.startswith("delete|"):
         # Handle delete channel button
         channel_name = data.split("|", 1)[1]
@@ -626,38 +716,43 @@ async def remove_flag_from_channel(channel_name, flag_to_remove):
 
 def create_flag_keyboard(channel_name, current_flags):
     """
-    Create keyboard with flag options, excluding already set flags.
-    
+    Create keyboard with flag options, showing current status (✅/❌).
+
     Args:
-        channel_name: Channel username
+        channel_name: Channel username or ID
         current_flags: List of currently set flags
-        
+
     Returns:
         list: Keyboard buttons
     """
     all_flags = [
-        "fwd", "video", "stream", "donat", "clown", "poo", 
+        "fwd", "video", "stream", "donat", "clown", "poo",
         "advert", "link", "mention", "hid_channel", "foreign_channel"
     ]
-    
-    # Filter out flags that are already set
-    available_flags = [flag for flag in all_flags if flag not in current_flags]
-    
-    # Create keyboard
+
     keyboard = []
     row = []
-    
-    for i, flag in enumerate(available_flags):
-        row.append(InlineKeyboardButton(f"Add flag: {flag}", callback_data=f"add_flag|{channel_name}|{flag}"))
-        
-        # Add 2 buttons per row
-        if len(row) == 2 or i == len(available_flags) - 1:
+
+    for i, flag in enumerate(all_flags):
+        if flag in current_flags:
+            # Flag is set, show ❌ and action to remove
+            button_text = f"❌ {flag}"
+            callback_action = f"remove_flag|{channel_name}|{flag}"
+        else:
+            # Flag is not set, show ✅ and action to add
+            button_text = f"✅ {flag}"
+            callback_action = f"add_flag|{channel_name}|{flag}"
+
+        row.append(InlineKeyboardButton(button_text, callback_data=callback_action))
+
+        # Add 2 buttons per row, or if it's the last flag
+        if len(row) == 2 or i == len(all_flags) - 1:
             keyboard.append(row)
             row = []
-    
+
     # Add delete button at the bottom
     keyboard.append([InlineKeyboardButton("Delete channel", callback_data=f"delete|{channel_name}")])
-    
+
     return keyboard
 
 def update_feed_url(feed_id, new_url):
