@@ -745,19 +745,15 @@ async def button_callback(update: Update, context: CallbackContext):
             # Prepare message asking for new regex
             prompt_message = ""
             if current_regex:
-                 # The regex from parse_qs is already decoded, no need to unquote again
-                 # Escape potentially problematic characters for display in Telegram
-                 # Note: This is a basic escape for display, not for regex validity itself
-                 # Use backticks for code formatting in MarkdownV2
-                 escaped_regex_for_display = current_regex.replace('`', '\`')
-                 prompt_message = f"Current regex for @{channel_name} is:\n`{escaped_regex_for_display}`\n\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
+                 # Display the raw regex as Markdown is disabled
+                 prompt_message = f"Current regex for @{channel_name} is:\n{current_regex}\n\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
             else:
                  prompt_message = f"No current regex set for @{channel_name}.\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
 
             # Edit the original message with the prompt
             # Important: We edit the message from the *button callback* context (query.message)
-            # Use MarkdownV2 for backticks
-            await query.edit_message_text(prompt_message, parse_mode='MarkdownV2')
+            # Removed parse_mode='MarkdownV2'
+            await query.edit_message_text(prompt_message)
 
         except Exception as e:
             logging.error(f"Failed during edit_regex preparation for {channel_name}: {e}", exc_info=True)
@@ -768,9 +764,9 @@ async def button_callback(update: Update, context: CallbackContext):
                 del context.user_data['editing_regex_for_channel']
             if 'editing_feed_id' in context.user_data:
                 del context.user_data['editing_feed_id']
-            # Escape error message for MarkdownV2
-            error_msg = str(e).replace('\\', '\\\\').replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('~', '\\~').replace('`', '\\`').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!')
-            await query.edit_message_text(f"Failed to start regex edit: {error_msg}", parse_mode='MarkdownV2')
+            # No need to escape error message if Markdown is not used for the error reply either
+            error_msg = str(e)
+            await query.edit_message_text(f"Failed to start regex edit: {error_msg}") # Removed parse_mode here too for consistency
 
 async def add_flag_to_channel(channel_name, flag_to_add):
     """
