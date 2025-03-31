@@ -4,6 +4,7 @@ import json
 import urllib.parse
 import miniflux
 import requests
+import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, CallbackContext
 from telegram.ext import filters
@@ -26,6 +27,27 @@ ADMIN_USERNAME = os.environ.get("ADMIN")
 ACCEPT_CHANNELS_WITOUT_USERNAME = os.environ.get("ACCEPT_CHANNELS_WITOUT_USERNAME", "false")
 
 miniflux_client = miniflux.Client(MINIFLUX_BASE_URL, username=MINIFLUX_USERNAME, password=MINIFLUX_PASSWORD)
+
+def parse_telegram_link(text: str) -> str | None:
+    """
+    Parses a string to find and extract the channel username/ID from a t.me link.
+    Handles formats like https://t.me/channel_name/123 or t.me/channel_name/123
+    """
+    if not text:
+        return None
+
+    # Regex to find t.me URLs
+    # Handles optional https://, t.me domain, channel name (alphanumeric/underscore), message ID (numeric)
+    match = re.search(r"(?:https?://)?t\\.me/([a-zA-Z0-9_]+)/(\\d+)", text) # Escaped . and d
+
+    if match:
+        channel_name = match.group(1)
+        message_id = match.group(2) # We don't use message_id, but capture it
+        logging.info(f"Parsed Telegram link: channel='{channel_name}', message_id='{message_id}'")
+        return channel_name
+    else:
+        logging.debug(f"No valid t.me link found in text: '{text}'")
+        return None
 
 def fetch_categories(client):
     """
@@ -217,13 +239,14 @@ async def list_channels(update: Update, context: CallbackContext):
 async def handle_message(update: Update, context: CallbackContext):
     """
     Handle incoming messages in private chat.
-    If the message is forwarded from a channel, fetch categories and ask user to select one.
+    If the message is forwarded from a channel OR contains a link to a channel message,
+    fetch categories and ask user to select one.
     Only processes messages from admin user.
     """
     msg = update.message
     if not msg:
         return
-    
+
     user = msg.from_user
     if not user or user.username != ADMIN_USERNAME:
         logging.warning(f"Unauthorized access attempt from user: {user.username if user else 'Unknown'}")
@@ -235,61 +258,75 @@ async def handle_message(update: Update, context: CallbackContext):
     if media_group_id and context.user_data.get("processed_media_group_id") == media_group_id:
         logging.info(f"Skipping duplicate message from media group {media_group_id}")
         return
-    
+
     msg_dict = msg.to_dict()
-    logging.info(f"Message details:\n{json.dumps(msg_dict, indent=4)}")
+    logging.info(f"Message details:\\n{json.dumps(msg_dict, indent=4)}") # Escaped newline
 
-    forward_chat = msg_dict.get("forward_from_chat")
-    if not forward_chat:
-        logging.info("Message is not forwarded from channel")
-        await update.message.reply_text("Please forward a message from a channel.")
+    channel_username = None
+    channel_source_type = None # 'forward' or 'link'
+
+    # 1. Check for forward
+    forward_chat = msg.forward_from_chat # Use attribute directly
+    if forward_chat and forward_chat.type == "channel":
+        logging.info(f"Processing forwarded message from channel: {forward_chat.username or forward_chat.id}") # Use attributes
+        accept_no_username = ACCEPT_CHANNELS_WITOUT_USERNAME.lower() == "true"
+        if not forward_chat.username and not accept_no_username: # Use attribute
+             logging.error(f"Channel {forward_chat.title} has no username") # Use attribute
+             await update.message.reply_text("Error: channel must have a public username to subscribe. \\nUse env ACCEPT_CHANNELS_WITOUT_USERNAME=true to accept channels without username (need support from RSS bridge).") # Escaped newline
+             return
+        channel_username = forward_chat.username or str(forward_chat.id) # Use attributes
+        channel_source_type = 'forward'
+        # If this is part of a media group from a forward, mark it as processed
+        if media_group_id:
+            context.user_data["processed_media_group_id"] = media_group_id
+            logging.info(f"Processing first forwarded message from media group {media_group_id}")
+
+    # 2. If not a forward, check for link in message text
+    elif msg.text:
+        parsed_channel = parse_telegram_link(msg.text)
+        if parsed_channel:
+            logging.info(f"Processing link to message from channel: {parsed_channel}")
+            # Here we assume public channels linked will have usernames discoverable by RSS Bridge.
+            # Handling private channels or those without usernames via links might require different logic or fail at the bridge level.
+            channel_username = parsed_channel
+            channel_source_type = 'link'
+             # If this is part of a media group from a link, mark it as processed
+            if media_group_id:
+                 context.user_data["processed_media_group_id"] = media_group_id
+                 logging.info(f"Processing first linked message from media group {media_group_id}")
+
+
+    # 3. If neither forward nor valid link
+    if not channel_username:
+        logging.info("Message is not a forward from a channel or a valid channel link.")
+        # Updated prompt
+        await update.message.reply_text("Please forward a message from a channel or send a link to a message from a public channel (e.g., https://t.me/channel_name/123).")
         return
 
-    if forward_chat["type"] != "channel":
-        logging.info(f"Forwarded message is from {forward_chat['type']}, not from channel")
-        await update.message.reply_text("Please forward a message from a channel, not from other source.")
-        return
-
-    # If this is part of a media group, mark it as processed
-    if media_group_id:
-        context.user_data["processed_media_group_id"] = media_group_id
-        logging.info(f"Processing first message from media group {media_group_id}")
-
-    logging.info(f"ACCEPT_CHANNELS_WITOUT_USERNAME={ACCEPT_CHANNELS_WITOUT_USERNAME}, username={forward_chat.get('username')}")
-    accept_no_username = ACCEPT_CHANNELS_WITOUT_USERNAME.lower() == "true"
-    if not forward_chat.get("username") and not accept_no_username:
-        logging.error(f"Channel {forward_chat['title']} has no username")
-        await update.message.reply_text("Error: channel must have a public username to subscribe. \nUse env ACCEPT_CHANNELS_WITOUT_USERNAME=true to accept channels without username (need support from RSS bridge).")
-        return
-
-    channel_username = forward_chat.get("username") or str(forward_chat.get("id"))
+    # Store channel title/username for later use
     context.user_data["channel_title"] = channel_username
-    logging.info(f"Processing forwarded message from channel: {channel_username}")
+    logging.info(f"Processing channel identified as: {channel_username} (Source: {channel_source_type})")
 
-    feed_url = RSS_BRIDGE_URL.replace("{channel}", channel_username) if "{channel}" in RSS_BRIDGE_URL else f"{RSS_BRIDGE_URL}/{channel_username}"
-    
     await update.message.chat.send_action("typing")
     try:
         feeds = miniflux_client.get_feeds()
         target_feed = None
+
+        # --- Simplified Check --- 
+        # Compare the target channel name with the channel name extracted from existing feed URLs
         for feed in feeds:
             feed_url_check = feed.get("feed_url", "")
-            # Simple check first
-            if feed_url == feed_url_check:
-                 target_feed = feed
-                 break
-            # Check ignoring query parameters if simple check failed
-            parsed_target = urllib.parse.urlparse(feed_url)
-            parsed_check = urllib.parse.urlparse(feed_url_check)
-            if parsed_target.scheme == parsed_check.scheme and \
-               parsed_target.netloc == parsed_check.netloc and \
-               parsed_target.path == parsed_check.path:
-                target_feed = feed
-                break
-        
-        if target_feed:
-            logging.info(f"Channel @{channel_username} is already in subscriptions")
+            existing_channel_name = extract_channel_from_feed_url(feed_url_check)
             
+            # Compare case-insensitively
+            if existing_channel_name and channel_username.lower() == existing_channel_name.lower():
+                target_feed = feed
+                logging.info(f"Found existing feed for channel '{channel_username}': ID={feed.get('id')}, URL={feed_url_check}")
+                break # Found a match
+
+        if target_feed:
+            logging.info(f"Channel @{channel_username} is already in subscriptions (matched channel name)")
+
             # Fetch current flags for the existing feed
             feed_id = target_feed.get("id")
             try:
@@ -315,12 +352,13 @@ async def handle_message(update: Update, context: CallbackContext):
                 reply_markup=reply_markup
             )
             return
-            
+
     except Exception as error:
         logging.error(f"Failed to check subscriptions or get existing feed details: {error}", exc_info=True)
         await update.message.reply_text("Failed to check existing subscriptions.")
         return
 
+    # --- Feed does not exist, proceed with category selection ---
     try:
         categories = fetch_categories(miniflux_client)
     except Exception as error:
