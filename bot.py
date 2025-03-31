@@ -101,7 +101,7 @@ def extract_channel_from_feed_url(feed_url):
     
     return None
 
-async def start(update: Update, context: CallbackContext):
+async def start(update: Update, _context: CallbackContext):
     """
     Handle the /start command.
     Only processes commands from admin user.
@@ -114,7 +114,7 @@ async def start(update: Update, context: CallbackContext):
 
     await update.message.reply_text("Forward me a message from any channel (public or private) or send a link to a message to subscribe to its RSS feed.")
 
-async def list_channels(update: Update, context: CallbackContext):
+async def list_channels(update: Update, _context: CallbackContext):
     """
     Handle the /list command.
     Lists all channels subscribed through RSS Bridge.
@@ -202,40 +202,40 @@ async def list_channels(update: Update, context: CallbackContext):
 
             # Check if message is too long (Telegram limit is 4096 chars)
             if len(cat_message) > 4000:
-                 # Split into multiple messages (Refined splitting logic)
-                 chunks = []
-                 current_chunk = f"📁 {cat_title}\\n" # Start with category title, Escaped newline
+                # Split into multiple messages (Refined splitting logic)
+                chunks = []
+                current_chunk = f"📁 {cat_title}\\n" # Start with category title, Escaped newline
 
-                 for feed_item in feeds_in_cat:
-                     channel_name = feed_item["title"]
-                     feed_line = f"  • {channel_name}"
-                     if feed_item["flags"]:
-                         feed_line += f", flags: {' '.join(feed_item['flags'])}"
-                     if feed_item["excluded_text"]:
-                          # Escape characters for MarkdownV2
-                          safe_text = feed_item['excluded_text'].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('~', '\\~').replace('`', '\\`').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!')
-                          feed_line += f", regex: `{safe_text}`"
+                for feed_item in feeds_in_cat:
+                    channel_name = feed_item["title"]
+                    feed_line = f"  • {channel_name}"
+                    if feed_item["flags"]:
+                        feed_line += f", flags: {' '.join(feed_item['flags'])}"
+                    if feed_item["excluded_text"]:
+                        # Escape characters for MarkdownV2
+                        safe_text = feed_item['excluded_text'].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('~', '\\~').replace('`', '\\`').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!')
+                        feed_line += f", regex: `{safe_text}`"
 
-                     feed_text = feed_line + "\\n" # Escaped newline
+                    feed_text = feed_line + "\\n" # Escaped newline
 
-                     # If adding this feed would make the chunk too long, send it and start a new one
-                     # Ensure the new chunk also starts with the category title (or continued indication)
-                     if len(current_chunk) + len(feed_text) > 4000:
-                         chunks.append(current_chunk)
-                         # Use a "continued" marker for subsequent chunks of the same category
-                         current_chunk = f"📁 {cat_title} \\(continued\\)\\n" # Escaped newline and parenthesis
+                    # If adding this feed would make the chunk too long, send it and start a new one
+                    # Ensure the new chunk also starts with the category title (or continued indication)
+                    if len(current_chunk) + len(feed_text) > 4000:
+                        chunks.append(current_chunk)
+                        # Use a "continued" marker for subsequent chunks of the same category
+                        current_chunk = f"📁 {cat_title} \\(continued\\)\\n" # Escaped newline and parenthesis
 
-                     current_chunk += feed_text
+                    current_chunk += feed_text
 
-                 # Add the last chunk if it has content
-                 # Check if more than just the header
-                 if len(current_chunk.strip()) > len(f"📁 {cat_title} \\(continued\\)\\n".strip()): # Escaped newline and parenthesis
-                      chunks.append(current_chunk)
+                # Add the last chunk if it has content
+                # Check if more than just the header
+                if len(current_chunk.strip()) > len(f"📁 {cat_title} \\(continued\\)\\n".strip()): # Escaped newline and parenthesis
+                    chunks.append(current_chunk)
 
-                 # Send all chunks
-                 for chunk in chunks:
-                     # Use markdown parse mode for backticks
-                     await update.message.reply_text(chunk, parse_mode='MarkdownV2')
+                # Send all chunks
+                for chunk in chunks:
+                    # Use markdown parse mode for backticks
+                    await update.message.reply_text(chunk, parse_mode='MarkdownV2')
             else:
                 # Send as a single message
                 # Use markdown parse mode for backticks
@@ -287,14 +287,14 @@ async def handle_message(update: Update, context: CallbackContext):
             current_feed_data = miniflux_client.get_feed(feed_id)
             current_url = current_feed_data.get("feed_url", "")
             if not current_url:
-                 logging.error(f"Could not retrieve current URL for feed {feed_id} ({channel_name}) before updating regex.")
-                 await update.message.reply_text("Error: Could not retrieve current feed URL. Cannot update regex.")
-                 return
+                logging.error(f"Could not retrieve current URL for feed {feed_id} ({channel_name}) before updating regex.")
+                await update.message.reply_text("Error: Could not retrieve current feed URL. Cannot update regex.")
+                return
 
             logging.info(f"Current URL for {channel_name} (feed ID: {feed_id}): {current_url}")
 
             # Determine if removing or updating the regex
-            remove_regex = new_regex_raw.lower() in ['none', '-']
+            remove_regex = new_regex_raw.lower() in ['-']
             # Store the RAW regex; urlencode will handle encoding later
             regex_to_store = "" if remove_regex else new_regex_raw 
 
@@ -331,13 +331,13 @@ async def handle_message(update: Update, context: CallbackContext):
             logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
 
             # Update the feed URL using the existing function
-            success, updated_url_from_miniflux, error_message = update_feed_url(feed_id, new_url)
+            success, _updated_url_from_miniflux, error_message = update_feed_url(feed_id, new_url)
 
             if success:
                 if remove_regex or not regex_to_store:
-                     await update.message.reply_text(f"Regex filter removed for channel @{channel_name}.")
+                    await update.message.reply_text(f"Regex filter removed for channel @{channel_name}.")
                 else:
-                     await update.message.reply_text(f"Regex for channel @{channel_name} updated to: {regex_to_store}")
+                    await update.message.reply_text(f"Regex for channel @{channel_name} updated to: {regex_to_store}")
 
                 # Show the flag keyboard again
                 try:
@@ -717,9 +717,9 @@ async def button_callback(update: Update, context: CallbackContext):
                         feed_url = updated_target_feed.get("feed_url", "")
                         logging.info(f"Fetched current feed URL for {channel_name} (ID: {feed_id}): {feed_url}")
                     except Exception as fetch_error:
-                         logging.error(f"Failed to fetch feed details for {feed_id} ({channel_name}) during regex edit prep: {fetch_error}")
-                         await query.edit_message_text(f"Error fetching current feed details for @{channel_name}.")
-                         return # Stop if we can't get the current URL
+                        logging.error(f"Failed to fetch feed details for {feed_id} ({channel_name}) during regex edit prep: {fetch_error}")
+                        await query.edit_message_text(f"Error fetching current feed details for @{channel_name}.")
+                        return # Stop if we can't get the current URL
                     break # Found and fetched feed, exit loop
 
             if not target_feed or not feed_id:
@@ -734,7 +734,7 @@ async def button_callback(update: Update, context: CallbackContext):
                 current_regex = query_params['exclude_text'][0] # Already decoded by parse_qs
                 logging.info(f"Found current regex for {channel_name}: '{current_regex}'")
             else:
-                 logging.info(f"No current exclude_text regex found for {channel_name}")
+                logging.info(f"No current exclude_text regex found for {channel_name}")
 
 
             # Store necessary info and set state for the next message handler
@@ -746,14 +746,14 @@ async def button_callback(update: Update, context: CallbackContext):
             # Prepare message asking for new regex
             prompt_message = ""
             if current_regex:
-                 # Display the raw regex as Markdown is disabled
-                 prompt_message = f"Current regex for @{channel_name} is:\n{current_regex}\n\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
+                prompt_message = f"Current regex for @{channel_name} is:\n{current_regex}\n\n"+ \
+                "Please send the new regex. Send '-' to remove the regex filter.\n" + \
+                "Example: реклама|спам|сбор|подписка for exclude all posts containing these words"
             else:
-                 prompt_message = f"No current regex set for @{channel_name}.\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
+                prompt_message = f"No current regex set for @{channel_name}.\n"+ \
+                "Please send the new regex. Send '-' to remove the regex filter. \n" + \
+                "Example: реклама|спам|сбор|подписка for exclude all posts containing these words"
 
-            # Edit the original message with the prompt
-            # Important: We edit the message from the *button callback* context (query.message)
-            # Removed parse_mode='MarkdownV2'
             await query.edit_message_text(prompt_message)
 
         except Exception as e:
