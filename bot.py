@@ -782,7 +782,9 @@ async def button_callback(update: Update, context: CallbackContext):
                 del context.user_data['editing_regex_for_channel']
             if 'editing_feed_id' in context.user_data:
                 del context.user_data['editing_feed_id']
-            await query.edit_message_text(f"Failed to start regex edit: {str(e)}")
+            # Escape error message for MarkdownV2
+            error_msg = str(e).replace('\\', '\\\\').replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('~', '\\~').replace('`', '\\`').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!')
+            await query.edit_message_text(f"Failed to start regex edit: {error_msg}", parse_mode='MarkdownV2')
 
 async def add_flag_to_channel(channel_name, flag_to_add):
     """
