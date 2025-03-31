@@ -121,47 +121,50 @@ async def list_channels(update: Update, context: CallbackContext):
         logging.warning(f"Unauthorized access attempt from user: {user.username if user else 'Unknown'}")
         await update.message.reply_text("Access denied. Only admin can use this bot.")
         return
-    
+
     await update.message.chat.send_action("typing")
-    
+
     try:
         feeds = miniflux_client.get_feeds()
         bridge_feeds = []
-        
+
         for feed in feeds:
             feed_url = feed.get("feed_url", "")
             channel = extract_channel_from_feed_url(feed_url)
-            
+
             if channel:
-                # Extract flags and excluded words from URL
+                # Extract flags and excluded text from URL
                 flags = []
-                excluded_words = []
-                
-                if "exclude_flags=" in feed_url:
-                    flags_part = feed_url.split("exclude_flags=")[1].split("&")[0]
-                    flags = flags_part.split(",")
-                
-                if "exclude_text=" in feed_url:
-                    words_part = feed_url.split("exclude_text=")[1].split("&")[0]
-                    excluded_words = [urllib.parse.unquote(words_part)]
-                
+                excluded_text = "" # Initialize excluded_text
+
+                parsed_url = urllib.parse.urlparse(feed_url)
+                query_params = urllib.parse.parse_qs(parsed_url.query)
+
+                if 'exclude_flags' in query_params:
+                    flags = query_params['exclude_flags'][0].split(',')
+
+                if 'exclude_text' in query_params:
+                    # Decode the URL-encoded regex
+                    excluded_text = query_params['exclude_text'][0] # Already decoded by parse_qs
+
+
                 bridge_feeds.append({
                     "title": feed.get("title", "Unknown"),
                     "channel": channel,
                     "feed_url": feed_url,
                     "flags": flags,
-                    "excluded_words": excluded_words,
+                    "excluded_text": excluded_text, # Store the decoded text
                     "category_id": feed.get("category", {}).get("id"),
                     "category_title": feed.get("category", {}).get("title", "Unknown")
                 })
-        
+
         if not bridge_feeds:
             await update.message.reply_text("No channels subscribed through RSS Bridge found.")
             return
-        
+
         # Sort by category and then by title
         bridge_feeds.sort(key=lambda x: (x["category_title"], x["title"]))
-        
+
         # Group by category
         categories = {}
         for feed in bridge_feeds:
@@ -169,69 +172,72 @@ async def list_channels(update: Update, context: CallbackContext):
             if cat_title not in categories:
                 categories[cat_title] = []
             categories[cat_title].append(feed)
-        
+
         # Send messages by category to avoid message length limit
         await update.message.reply_text("Subscribed channels by category:")
-        
-        for cat_title, feeds in categories.items():
+
+        for cat_title, feeds_in_cat in categories.items(): # Renamed 'feeds' to avoid conflict
             # Build category message
-            cat_message = f"📁 {cat_title}\n"
-            for feed in feeds:
-                channel_name = feed["title"]
-                
+            cat_message = f"📁 {cat_title}\\n" # Escaped newline
+            for feed_item in feeds_in_cat: # Renamed 'feed'
+                channel_name = feed_item["title"]
+
                 feed_line = f"  • {channel_name}"
-                
+
                 # Add flags if present
-                if feed["flags"]:
-                    feed_line += f", flags: {' '.join(feed['flags'])}"
-                
-                # Add excluded words if present
-                if feed["excluded_words"] and feed["excluded_words"][0]:
-                    words = ', '.join([w.strip('"\'') for w in feed["excluded_words"]])
-                    feed_line += f", words: {words}"
-                
-                cat_message += feed_line + "\n"
-            
+                if feed_item["flags"]:
+                    feed_line += f", flags: {' '.join(feed_item['flags'])}"
+
+                # Add excluded text if present
+                if feed_item["excluded_text"]:
+                    # Ensure we display the raw decoded string
+                    # Escape characters for MarkdownV2
+                    safe_text = feed_item['excluded_text'].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('~', '\\~').replace('`', '\\`').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!')
+                    feed_line += f", regex: `{safe_text}`" # Use backticks for visibility
+
+                cat_message += feed_line + "\\n" # Escaped newline
+
             # Check if message is too long (Telegram limit is 4096 chars)
             if len(cat_message) > 4000:
-                # Split into multiple messages
-                chunks = []
-                current_chunk = f"📁 {cat_title} (continued)\n"
-                
-                for feed in feeds:
-                    channel_name = feed["title"]
-                    
-                    feed_line = f"  • {channel_name}"
-                    
-                    # Add flags if present
-                    if feed["flags"]:
-                        feed_line += f", flags: {' '.join(feed['flags'])}"
-                    
-                    # Add excluded words if present
-                    if feed["excluded_words"] and feed["excluded_words"][0]:
-                        words = ', '.join([w.strip('"\'') for w in feed["excluded_words"]])
-                        feed_line += f", words: {words}"
-                    
-                    feed_text = feed_line + "\n"
-                    
-                    # If adding this feed would make the chunk too long, send it and start a new one
-                    if len(current_chunk) + len(feed_text) > 4000:
-                        chunks.append(current_chunk)
-                        current_chunk = f"📁 {cat_title} (continued)\n"
-                    
-                    current_chunk += feed_text
-                
-                # Add the last chunk if it has content
-                if current_chunk != f"📁 {cat_title} (continued)\n":
-                    chunks.append(current_chunk)
-                
-                # Send all chunks
-                for chunk in chunks:
-                    await update.message.reply_text(chunk)
+                 # Split into multiple messages (Refined splitting logic)
+                 chunks = []
+                 current_chunk = f"📁 {cat_title}\\n" # Start with category title, Escaped newline
+
+                 for feed_item in feeds_in_cat:
+                     channel_name = feed_item["title"]
+                     feed_line = f"  • {channel_name}"
+                     if feed_item["flags"]:
+                         feed_line += f", flags: {' '.join(feed_item['flags'])}"
+                     if feed_item["excluded_text"]:
+                          # Escape characters for MarkdownV2
+                          safe_text = feed_item['excluded_text'].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('~', '\\~').replace('`', '\\`').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!')
+                          feed_line += f", regex: `{safe_text}`"
+
+                     feed_text = feed_line + "\\n" # Escaped newline
+
+                     # If adding this feed would make the chunk too long, send it and start a new one
+                     # Ensure the new chunk also starts with the category title (or continued indication)
+                     if len(current_chunk) + len(feed_text) > 4000:
+                         chunks.append(current_chunk)
+                         # Use a "continued" marker for subsequent chunks of the same category
+                         current_chunk = f"📁 {cat_title} \\(continued\\)\\n" # Escaped newline and parenthesis
+
+                     current_chunk += feed_text
+
+                 # Add the last chunk if it has content
+                 # Check if more than just the header
+                 if len(current_chunk.strip()) > len(f"📁 {cat_title} \\(continued\\)\\n".strip()): # Escaped newline and parenthesis
+                      chunks.append(current_chunk)
+
+                 # Send all chunks
+                 for chunk in chunks:
+                     # Use markdown parse mode for backticks
+                     await update.message.reply_text(chunk, parse_mode='MarkdownV2')
             else:
                 # Send as a single message
-                await update.message.reply_text(cat_message)
-        
+                # Use markdown parse mode for backticks
+                await update.message.reply_text(cat_message, parse_mode='MarkdownV2') # Use MarkdownV2 for backticks
+
     except Exception as error:
         logging.error(f"Failed to list channels: {error}", exc_info=True)
         await update.message.reply_text(f"Failed to list channels: {str(error)}")
@@ -241,6 +247,7 @@ async def handle_message(update: Update, context: CallbackContext):
     Handle incoming messages in private chat.
     If the message is forwarded from a channel OR contains a link to a channel message,
     fetch categories and ask user to select one.
+    If the state is 'awaiting_regex', update the regex for the specified channel.
     Only processes messages from admin user.
     """
     msg = update.message
@@ -302,6 +309,128 @@ async def handle_message(update: Update, context: CallbackContext):
         # Updated prompt
         await update.message.reply_text("Please forward a message from a channel or send a link to a message from a public channel (e.g., https://t.me/channel_name/123).")
         return
+
+    # Store channel title/username for later use
+    context.user_data["channel_title"] = channel_username
+    logging.info(f"Processing channel identified as: {channel_username} (Source: {channel_source_type})")
+
+    await update.message.chat.send_action("typing")
+
+    # --- Check for state: awaiting_regex ---
+    if context.user_data.get('state') == 'awaiting_regex':
+        channel_name = context.user_data.get('editing_regex_for_channel')
+        feed_id = context.user_data.get('editing_feed_id')
+        new_regex_raw = msg.text.strip() if msg.text else ""
+
+        # Clean up state regardless of success/failure below
+        if 'state' in context.user_data: del context.user_data['state']
+        if 'editing_regex_for_channel' in context.user_data: del context.user_data['editing_regex_for_channel']
+        if 'editing_feed_id' in context.user_data: del context.user_data['editing_feed_id']
+        logging.info(f"Processing new regex for channel {channel_name} (feed ID: {feed_id}). State cleared.")
+
+        if not channel_name or not feed_id:
+            logging.error("State 'awaiting_regex' was set, but channel_name or feed_id missing from context.")
+            await update.message.reply_text("Error: Missing context for regex update. Please try editing again.")
+            return # Stop processing this message
+
+        await update.message.chat.send_action("typing")
+
+        try:
+            # Fetch the current feed URL again to build the new one
+            current_feed_data = miniflux_client.get_feed(feed_id)
+            current_url = current_feed_data.get("feed_url", "")
+            if not current_url:
+                 logging.error(f"Could not retrieve current URL for feed {feed_id} ({channel_name}) before updating regex.")
+                 await update.message.reply_text("Error: Could not retrieve current feed URL. Cannot update regex.")
+                 return
+
+            logging.info(f"Current URL for {channel_name} (feed ID: {feed_id}): {current_url}")
+
+            # Determine if removing or updating the regex
+            remove_regex = new_regex_raw.lower() in ['none', '-']
+            new_regex_encoded = "" if remove_regex else urllib.parse.quote(new_regex_raw)
+
+            # Construct the new URL
+            parsed_url = urllib.parse.urlparse(current_url)
+            query_params = urllib.parse.parse_qs(parsed_url.query, keep_blank_values=True) # Keep blank values
+
+            if remove_regex:
+                if 'exclude_text' in query_params:
+                    del query_params['exclude_text']
+                    logging.info(f"Removing exclude_text parameter for {channel_name}.")
+            elif new_regex_encoded: # Only add/update if new regex is not empty
+                query_params['exclude_text'] = [new_regex_encoded] # Set or overwrite
+                logging.info(f"Setting/updating exclude_text parameter for {channel_name} to encoded value: {new_regex_encoded}")
+            else:
+                # User sent empty message but not 'none' or '-', maybe ignore or treat as remove?
+                # Let's treat empty as remove for simplicity. If user wants empty regex, it is strange anyway.
+                if 'exclude_text' in query_params:
+                    del query_params['exclude_text']
+                    logging.info(f"Removing exclude_text parameter for {channel_name} due to empty input.")
+
+            # Rebuild the URL
+            new_query_string = urllib.parse.urlencode(query_params, doseq=True)
+            new_url = urllib.parse.urlunparse((
+                parsed_url.scheme,
+                parsed_url.netloc,
+                parsed_url.path,
+                parsed_url.params,
+                new_query_string,
+                parsed_url.fragment
+            ))
+
+            logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
+
+            # Update the feed URL using the existing function
+            success, updated_url_from_miniflux, error_message = update_feed_url(feed_id, new_url)
+
+            if success:
+                if remove_regex or not new_regex_encoded:
+                     final_message = f"Regex filter removed for channel @{channel_name}."
+                else:
+                     # Escape for display
+                     safe_new_regex = new_regex_raw.replace('_', '\\\\_').replace('*', '\\\\*').replace('[', '\\\\[').replace(']', '\\\\]').replace('(', '\\\\(').replace(')', '\\\\)').replace('~', '\\\\~').replace('`', '\\\\`').replace('>', '\\\\>').replace('#', '\\\\#').replace('+', '\\\\+').replace('-', '\\\\-').replace('=', '\\\\=').replace('|', '\\\\|').replace('{', '\\\\{').replace('}', '\\\\}').replace('.', '\\\\.').replace('!', '\\\\!')
+                     final_message = f"Regex for channel @{channel_name} updated to:\\n`{safe_new_regex}`"
+                await update.message.reply_text(final_message, parse_mode='MarkdownV2')
+
+                # --- Optional: Show the flag keyboard again ---
+                # Fetch current flags to display the keyboard correctly after update
+                try:
+                    updated_feed_after_regex = miniflux_client.get_feed(feed_id)
+                    feed_url_after_regex = updated_feed_after_regex.get("feed_url", "")
+                    current_flags_after_regex = []
+                    parsed_url_after = urllib.parse.urlparse(feed_url_after_regex)
+                    query_params_after = urllib.parse.parse_qs(parsed_url_after.query)
+                    if 'exclude_flags' in query_params_after:
+                        current_flags_after_regex = query_params_after['exclude_flags'][0].split(',')
+
+                    keyboard = create_flag_keyboard(channel_name, current_flags_after_regex)
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await update.message.reply_text(f"Updated options for @{channel_name}:", reply_markup=reply_markup)
+                    logging.info(f"Displayed updated options keyboard for {channel_name} after regex update.")
+
+                except Exception as e_flags:
+                    logging.error(f"Failed to fetch flags/show keyboard after regex update for {channel_name}: {e_flags}")
+                    # Non-critical error, just log it. The main update succeeded.
+
+            else:
+                logging.error(f"Failed to update feed URL for {channel_name} (feed ID: {feed_id}) with new regex. Error: {error_message}. Attempted URL: {new_url}")
+                await update.message.reply_text(f"Failed to update regex for channel @{channel_name}. Miniflux error: {error_message}")
+
+        except Exception as e:
+            logging.error(f"Error processing new regex for {channel_name}: {e}", exc_info=True)
+            await update.message.reply_text(f"An unexpected error occurred while updating the regex: {str(e)}")
+
+        return # Important: Stop processing after handling the state
+
+    # --- Existing logic for forwards/links starts here ---
+    # (Make sure the code above is placed *before* this section)
+
+    # Check if this message is part of a media group we've already processed
+    media_group_id = msg.media_group_id
+    if media_group_id:
+        context.user_data["processed_media_group_id"] = media_group_id
+        logging.info(f"Processing first message from media group {media_group_id}")
 
     # Store channel title/username for later use
     context.user_data["channel_title"] = channel_username
@@ -540,6 +669,7 @@ async def button_callback(update: Update, context: CallbackContext):
         # Handle delete channel button
         channel_name = data.split("|", 1)[1]
         
+        await query.message.chat.send_action("typing")
         try:
             # Get all feeds
             feeds = miniflux_client.get_feeds()
@@ -567,8 +697,86 @@ async def button_callback(update: Update, context: CallbackContext):
             await query.edit_message_text(f"Channel @{channel_name} has been deleted from subscriptions.")
             
         except Exception as e:
-            logging.error(f"Failed to delete feed: {e}", exc_info=True)
+            logging.error(f"Failed to delete feed for {channel_name}: {e}", exc_info=True)
             await query.edit_message_text(f"Failed to delete channel: {str(e)}")
+
+    elif data.startswith("edit_regex|"):
+        # Handle edit regex button
+        channel_name = data.split("|", 1)[1]
+
+        await query.message.chat.send_action("typing")
+        try:
+            # Find the feed for the channel
+            feeds = miniflux_client.get_feeds()
+            target_feed = None
+            feed_url = ""
+            feed_id = None
+            current_regex = ""
+
+            for feed in feeds:
+                feed_url_check = feed.get("feed_url", "")
+                channel = extract_channel_from_feed_url(feed_url_check)
+                if channel and channel.lower() == channel_name.lower():
+                    target_feed = feed
+                    feed_id = feed.get("id")
+                    # Fetch the most up-to-date feed data to get the current URL accurately
+                    if not feed_id: # Basic check if feed_id was found
+                        logging.warning(f"Feed ID not found for channel {channel_name} during regex edit prep.")
+                        continue # Should ideally not happen if target_feed is set, but good practice
+                    try:
+                        updated_target_feed = miniflux_client.get_feed(feed_id)
+                        feed_url = updated_target_feed.get("feed_url", "")
+                        logging.info(f"Fetched current feed URL for {channel_name} (ID: {feed_id}): {feed_url}")
+                    except Exception as fetch_error:
+                         logging.error(f"Failed to fetch feed details for {feed_id} ({channel_name}) during regex edit prep: {fetch_error}")
+                         await query.edit_message_text(f"Error fetching current feed details for @{channel_name}.")
+                         return # Stop if we can't get the current URL
+                    break # Found and fetched feed, exit loop
+
+            if not target_feed or not feed_id:
+                logging.warning(f"Target feed or feed_id not found for {channel_name} after searching feeds.")
+                await query.edit_message_text(f"Channel @{channel_name} not found in subscriptions or feed ID missing.")
+                return
+
+            # Extract current regex from the feed URL
+            parsed_url = urllib.parse.urlparse(feed_url)
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            if 'exclude_text' in query_params:
+                current_regex = query_params['exclude_text'][0] # Already decoded by parse_qs
+                logging.info(f"Found current regex for {channel_name}: '{current_regex}'")
+            else:
+                 logging.info(f"No current exclude_text regex found for {channel_name}")
+
+
+            # Store necessary info and set state for the next message handler
+            context.user_data['state'] = 'awaiting_regex'
+            context.user_data['editing_regex_for_channel'] = channel_name
+            context.user_data['editing_feed_id'] = feed_id # Store feed_id too
+            logging.info(f"Set state to 'awaiting_regex' for channel {channel_name} (feed ID: {feed_id})")
+
+            # Prepare message asking for new regex
+            prompt_message = ""
+            if current_regex:
+                 # Escape characters for MarkdownV2
+                 safe_regex = current_regex.replace('_', '\\\\_').replace('*', '\\\\*').replace('[', '\\\\[').replace(']', '\\\\]').replace('(', '\\\\(').replace(')', '\\\\)').replace('~', '\\\\~').replace('`', '\\\\`').replace('>', '\\\\>').replace('#', '\\\\#').replace('+', '\\\\+').replace('-', '\\\\-').replace('=', '\\\\=').replace('|', '\\\\|').replace('{', '\\\\{').replace('}', '\\\\}').replace('.', '\\\\.').replace('!', '\\\\!')
+                 prompt_message = f"Current regex for @{channel_name} is:\\n`{safe_regex}`\\n\\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
+            else:
+                 prompt_message = f"No current regex set for @{channel_name}.\\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
+
+            # Edit the original message with the prompt
+            # Important: We edit the message from the *button callback* context (query.message)
+            await query.edit_message_text(prompt_message, parse_mode='MarkdownV2') # Use MarkdownV2
+
+        except Exception as e:
+            logging.error(f"Failed during edit_regex preparation for {channel_name}: {e}", exc_info=True)
+            # Reset state if error occurs during preparation
+            if 'state' in context.user_data:
+                del context.user_data['state']
+            if 'editing_regex_for_channel' in context.user_data:
+                del context.user_data['editing_regex_for_channel']
+            if 'editing_feed_id' in context.user_data:
+                del context.user_data['editing_feed_id']
+            await query.edit_message_text(f"Failed to start regex edit: {str(e)}")
 
 async def add_flag_to_channel(channel_name, flag_to_add):
     """
@@ -754,7 +962,8 @@ async def remove_flag_from_channel(channel_name, flag_to_remove):
 
 def create_flag_keyboard(channel_name, current_flags):
     """
-    Create keyboard with flag options, showing current status (✅/❌).
+    Create keyboard with flag options, showing current status (✅/❌),
+    and an option to edit the exclude_text regex.
 
     Args:
         channel_name: Channel username or ID
@@ -787,6 +996,9 @@ def create_flag_keyboard(channel_name, current_flags):
         if len(row) == 2 or i == len(all_flags) - 1:
             keyboard.append(row)
             row = []
+
+    # Add Edit Regex button
+    keyboard.append([InlineKeyboardButton("Edit Regex", callback_data=f"edit_regex|{channel_name}")])
 
     # Add delete button at the bottom
     keyboard.append([InlineKeyboardButton("Delete channel", callback_data=f"delete|{channel_name}")])
