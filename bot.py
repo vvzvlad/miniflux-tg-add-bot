@@ -8,6 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, CallbackContext
 from telegram.ext import filters
 from miniflux import ClientError, ServerError
+import time
 
 # Configure logging with detailed messages
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -671,25 +672,36 @@ def update_feed_url(feed_id, new_url):
         tuple: (success, updated_url, response_text)
     """
     try:
+        logging.info(f"Attempting to update feed ID {feed_id} URL to: {new_url}")
         # Update feed with new URL
         miniflux_client.update_feed(feed_id=feed_id, feed_url=new_url)
-        
-        # Get the updated feed
+        logging.info(f"Update request sent for feed ID {feed_id}. Waiting 2 seconds before verification.")
+
+        # Add a short delay to allow Miniflux to process the update
+        time.sleep(2)
+
+        # Get the updated feed to verify the change
+        logging.info(f"Verifying URL update for feed ID {feed_id}")
         updated_feed = miniflux_client.get_feed(feed_id)
         updated_url = updated_feed.get("feed_url", "")
-        logging.info(f"Verified updated feed URL: {updated_url}")
+        logging.info(f"Verified feed URL for feed ID {feed_id}: {updated_url}")
         
-        # Check if the URL was updated
+        # Check if the URL was actually updated
         if updated_url == new_url:
-            logging.info(f"URL successfully updated to: {updated_url}")
+            logging.info(f"URL for feed ID {feed_id} successfully updated to: {updated_url}")
             return True, updated_url, ""
         else:
-            logging.error(f"URL update failed! Expected: {new_url}, Got: {updated_url}")
-            return False, updated_url, ""
+            # Log the discrepancy clearly
+            logging.error(f"URL update verification failed for feed ID {feed_id}! Expected URL: '{new_url}', but received URL: '{updated_url}'. Miniflux might not have processed the update in time or ignored URL parameters.")
+            # Consider returning True but with a warning, or False depending on desired behavior
+            # For now, returning False as the verification failed.
+            return False, updated_url, f"Verification failed: Expected '{new_url}', got '{updated_url}'"
             
     except Exception as e:
-        logging.error(f"Failed to update feed: {e}", exc_info=True)
-        raise
+        logging.error(f"Failed to update feed ID {feed_id}: {e}", exc_info=True)
+        # It's better to re-raise the exception or return specific error info
+        # Returning False might hide the actual error cause
+        return False, "", f"Exception during update: {str(e)}"
 
 async def add_flag(update: Update, context: CallbackContext):
     """
@@ -714,7 +726,7 @@ async def add_flag(update: Update, context: CallbackContext):
     await update.message.chat.send_action("typing")
     
     # Call the shared function for adding flags
-    success, message, _ = await add_flag_to_channel(channel_name, flag_to_add)
+    _success, message, _ = await add_flag_to_channel(channel_name, flag_to_add)
     await update.message.reply_text(message)
 
 async def remove_flag(update: Update, context: CallbackContext):
@@ -740,7 +752,7 @@ async def remove_flag(update: Update, context: CallbackContext):
     await update.message.chat.send_action("typing")
     
     # Call the shared function for removing flags
-    success, message, _ = await remove_flag_from_channel(channel_name, flag_to_remove)
+    _success, message, _ = await remove_flag_from_channel(channel_name, flag_to_remove)
     await update.message.reply_text(message)
 
 def main():
