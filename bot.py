@@ -314,7 +314,26 @@ async def handle_message(update: Update, context: CallbackContext):
                     logging.info(f"Removing exclude_text parameter for {channel_name} due to empty input.")
 
             # Rebuild the URL
-            new_query_string = urllib.parse.urlencode(query_params, doseq=True)
+            # Handle exclude_flags separately to preserve commas
+            flags_param = ""
+            if 'exclude_flags' in query_params:
+                flags = query_params['exclude_flags'][0]
+                del query_params['exclude_flags']
+                if flags:
+                    flags_param = f"exclude_flags={flags}"
+
+            # Handle other parameters
+            other_params = urllib.parse.urlencode(query_params, doseq=True)
+            
+            # Combine parameters
+            new_query_string = ""
+            if flags_param and other_params:
+                new_query_string = f"{flags_param}&{other_params}"
+            elif flags_param:
+                new_query_string = flags_param
+            else:
+                new_query_string = other_params
+
             new_url = urllib.parse.urlunparse((
                 parsed_url.scheme,
                 parsed_url.netloc,
