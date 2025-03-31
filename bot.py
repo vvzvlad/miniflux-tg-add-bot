@@ -760,7 +760,7 @@ async def button_callback(update: Update, context: CallbackContext):
             prompt_message = ""
             if current_regex:
                  # Escape characters for MarkdownV2
-                 safe_regex = current_regex.replace('_', '\\\\_').replace('*', '\\\\*').replace('[', '\\\\[').replace(']', '\\\\]').replace('(', '\\\\(').replace(')', '\\\\)').replace('~', '\\\\~').replace('`', '\\\\`').replace('>', '\\\\>').replace('#', '\\\\#').replace('+', '\\\\+').replace('-', '\\\\-').replace('=', '\\\\=').replace('|', '\\\\|').replace('{', '\\\\{').replace('}', '\\\\}').replace('.', '\\\\.').replace('!', '\\\\!')
+                 safe_regex = current_regex.replace('\\', '\\\\').replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('~', '\\~').replace('`', '\\`').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!')
                  prompt_message = f"Current regex for @{channel_name} is:\\n`{safe_regex}`\\n\\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
             else:
                  prompt_message = f"No current regex set for @{channel_name}.\\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
