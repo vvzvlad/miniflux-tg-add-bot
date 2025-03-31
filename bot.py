@@ -295,9 +295,10 @@ async def handle_message(update: Update, context: CallbackContext):
 
             # Determine if removing or updating the regex
             remove_regex = new_regex_raw.lower() in ['none', '-']
-            new_regex_encoded = "" if remove_regex else urllib.parse.quote(new_regex_raw)
+            # Store the RAW regex; urlencode will handle encoding later
+            regex_to_store = "" if remove_regex else new_regex_raw 
 
-            # Construct the new URL
+            # Construct the new URL dictionary from the parsed query string
             parsed_url = urllib.parse.urlparse(current_url)
             query_params = urllib.parse.parse_qs(parsed_url.query, keep_blank_values=True)
 
@@ -305,17 +306,17 @@ async def handle_message(update: Update, context: CallbackContext):
                 if 'exclude_text' in query_params:
                     del query_params['exclude_text']
                     logging.info(f"Removing exclude_text parameter for {channel_name}.")
-            elif new_regex_encoded:
-                query_params['exclude_text'] = [new_regex_encoded]
-                logging.info(f"Setting/updating exclude_text parameter for {channel_name} to encoded value: {new_regex_encoded}")
-            else:
+            # Use the raw regex here when updating the dictionary
+            elif regex_to_store: 
+                query_params['exclude_text'] = [regex_to_store] 
+                logging.info(f"Setting/updating exclude_text parameter for {channel_name} to raw value: {regex_to_store}")
+            else: # Handle empty input case - remove if exists
                 if 'exclude_text' in query_params:
                     del query_params['exclude_text']
                     logging.info(f"Removing exclude_text parameter for {channel_name} due to empty input.")
 
-            # Rebuild the URL (Simplified approach)
-            # Re-encode the entire query string correctly after modifications
-            # doseq=True handles multiple values for a key properly
+            # Rebuild the URL query string
+            # urlencode will correctly encode the raw regex value stored in query_params['exclude_text']
             new_query_string = urllib.parse.urlencode(query_params, doseq=True)
 
             new_url = urllib.parse.urlunparse((
@@ -333,10 +334,10 @@ async def handle_message(update: Update, context: CallbackContext):
             success, updated_url_from_miniflux, error_message = update_feed_url(feed_id, new_url)
 
             if success:
-                if remove_regex or not new_regex_encoded:
+                if remove_regex or not regex_to_store:
                      await update.message.reply_text(f"Regex filter removed for channel @{channel_name}.")
                 else:
-                     await update.message.reply_text(f"Regex for channel @{channel_name} updated to: {new_regex_raw}")
+                     await update.message.reply_text(f"Regex for channel @{channel_name} updated to: {regex_to_store}")
 
                 # Show the flag keyboard again
                 try:
