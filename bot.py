@@ -742,7 +742,9 @@ async def button_callback(update: Update, context: CallbackContext):
             # Prepare message asking for new regex
             prompt_message = ""
             if current_regex:
-                 prompt_message = f"Current regex for @{channel_name} is:\n{current_regex}\n\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
+                 # URL-decode the regex before displaying
+                 decoded_regex = urllib.parse.unquote(current_regex)
+                 prompt_message = f"Current regex for @{channel_name} is:\n{decoded_regex}\n\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
             else:
                  prompt_message = f"No current regex set for @{channel_name}.\nPlease send the new regex. Send 'none' or '-' to remove the regex filter."
 
