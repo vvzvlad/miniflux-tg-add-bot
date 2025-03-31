@@ -31,14 +31,18 @@ miniflux_client = miniflux.Client(MINIFLUX_BASE_URL, username=MINIFLUX_USERNAME,
 def parse_telegram_link(text: str) -> str | None:
     """
     Parses a string to find and extract the channel username/ID from a t.me link.
-    Handles formats like https://t.me/channel_name/123 or t.me/channel_name/123
+    Handles formats like:
+    - https://t.me/channel_name/123
+    - t.me/channel_name/123
+    - https://t.me/-1002069358234/1951
+    - t.me/-1002069358234/1951
     """
     if not text:
         return None
 
     # Regex to find t.me URLs
-    # Handles optional https://, t.me domain, channel name (alphanumeric/underscore), message ID (numeric)
-    match = re.search(r"(?:https?://)?t\.me/([a-zA-Z0-9_]+)/\d+", text)
+    # Handles optional https://, t.me domain, channel name (alphanumeric/underscore) or numeric ID (with optional minus), message ID (numeric)
+    match = re.search(r"(?:https?://)?t\.me/([-]?\d+|[a-zA-Z0-9_]+)/\d+", text)
 
     if match:
         channel_name = match.group(1)
@@ -108,7 +112,7 @@ async def start(update: Update, context: CallbackContext):
         await update.message.reply_text("Access denied. Only admin can use this bot.")
         return
 
-    await update.message.reply_text("Forward me a message from a channel to subscribe to its RSS feed.")
+    await update.message.reply_text("Forward me a message from any channel (public or private) or send a link to a message to subscribe to its RSS feed.")
 
 async def list_channels(update: Update, context: CallbackContext):
     """
@@ -309,7 +313,7 @@ async def handle_message(update: Update, context: CallbackContext):
     if not channel_username:
         logging.info("Message is not a forward from a channel or a valid channel link.")
         # Updated prompt
-        await update.message.reply_text("Please forward a message from a channel or send a link to a message from a public channel (e.g., https://t.me/channel_name/123).")
+        await update.message.reply_text("Please forward a message from any channel (public or private) or send a link to a message (e.g., https://t.me/channel_name/123 or https://t.me/-1002069358234/1951).")
         return
 
     # Store channel title/username for later use
@@ -475,7 +479,7 @@ async def handle_message(update: Update, context: CallbackContext):
                 current_flags = [] # Proceed without flag status if fetch fails
 
             # Create keyboard with current flag statuses
-            keyboard = create_flag_keyboard(channel_username, current_flags)
+            keyboard = create_flag_keyboard(channel_name, current_flags)
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             await update.message.reply_text(
