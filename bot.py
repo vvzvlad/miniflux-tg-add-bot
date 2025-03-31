@@ -984,12 +984,12 @@ def create_flag_keyboard(channel_name, current_flags):
 
     for i, flag in enumerate(all_flags):
         if flag in current_flags:
-            # Flag is set, show ❌ and action to remove
-            button_text = f"❌ {flag}"
+            # Flag is set, show option to remove
+            button_text = f"❌ Remove \"{flag}\""
             callback_action = f"remove_flag|{channel_name}|{flag}"
         else:
-            # Flag is not set, show ✅ and action to add
-            button_text = f"✅ {flag}"
+            # Flag is not set, show option to add
+            button_text = f"✅ Add \"{flag}\""
             callback_action = f"add_flag|{channel_name}|{flag}"
 
         row.append(InlineKeyboardButton(button_text, callback_data=callback_action))
