@@ -968,13 +968,13 @@ async def remove_flag_from_channel(channel_name, flag_to_remove):
         logging.error(f"Failed to update feed: {e}", exc_info=True)
         return False, f"Failed to remove flag: {str(e)}", []
 
-def create_flag_keyboard(channel_name, current_flags):
+def create_flag_keyboard(channel_username, current_flags):
     """
     Create keyboard with flag options, showing current status (✅/❌),
     and an option to edit the exclude_text regex.
 
     Args:
-        channel_name: Channel username or ID
+        channel_username: Channel username or ID
         current_flags: List of currently set flags
 
     Returns:
@@ -992,11 +992,11 @@ def create_flag_keyboard(channel_name, current_flags):
         if flag in current_flags:
             # Flag is set, show option to remove
             button_text = f"❌ Remove \"{flag}\""
-            callback_action = f"remove_flag|{channel_name}|{flag}"
+            callback_action = f"remove_flag|{channel_username}|{flag}"
         else:
             # Flag is not set, show option to add
             button_text = f"✅ Add \"{flag}\""
-            callback_action = f"add_flag|{channel_name}|{flag}"
+            callback_action = f"add_flag|{channel_username}|{flag}"
 
         row.append(InlineKeyboardButton(button_text, callback_data=callback_action))
 
@@ -1006,10 +1006,10 @@ def create_flag_keyboard(channel_name, current_flags):
             row = []
 
     # Add Edit Regex button
-    keyboard.append([InlineKeyboardButton("Edit Regex", callback_data=f"edit_regex|{channel_name}")])
+    keyboard.append([InlineKeyboardButton("Edit Regex", callback_data=f"edit_regex|{channel_username}")])
 
     # Add delete button at the bottom
-    keyboard.append([InlineKeyboardButton("Delete channel", callback_data=f"delete|{channel_name}")])
+    keyboard.append([InlineKeyboardButton("Delete channel", callback_data=f"delete|{channel_username}")])
 
     return keyboard
 
