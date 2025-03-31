@@ -266,7 +266,7 @@ async def handle_message(update: Update, context: CallbackContext):
     channel_source_type = None # 'forward' or 'link'
 
     # 1. Check for forward
-    forward_chat = msg.forward_from_chat # Use attribute directly
+    forward_chat = getattr(msg, 'forward_from_chat', None)
     if forward_chat and forward_chat.type == "channel":
         logging.info(f"Processing forwarded message from channel: {forward_chat.username or forward_chat.id}") # Use attributes
         accept_no_username = ACCEPT_CHANNELS_WITOUT_USERNAME.lower() == "true"
