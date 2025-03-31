@@ -263,6 +263,106 @@ async def handle_message(update: Update, context: CallbackContext):
         await update.message.reply_text("Access denied. Only admin can use this bot.")
         return
 
+    # First check if we're awaiting regex input
+    if context.user_data.get('state') == 'awaiting_regex':
+        channel_name = context.user_data.get('editing_regex_for_channel')
+        feed_id = context.user_data.get('editing_feed_id')
+        new_regex_raw = msg.text.strip() if msg.text else ""
+
+        # Clean up state regardless of success/failure below
+        if 'state' in context.user_data: del context.user_data['state']
+        if 'editing_regex_for_channel' in context.user_data: del context.user_data['editing_regex_for_channel']
+        if 'editing_feed_id' in context.user_data: del context.user_data['editing_feed_id']
+        logging.info(f"Processing new regex for channel {channel_name} (feed ID: {feed_id}). State cleared.")
+
+        if not channel_name or not feed_id:
+            logging.error("State 'awaiting_regex' was set, but channel_name or feed_id missing from context.")
+            await update.message.reply_text("Error: Missing context for regex update. Please try editing again.")
+            return
+
+        await update.message.chat.send_action("typing")
+
+        try:
+            # Fetch the current feed URL again to build the new one
+            current_feed_data = miniflux_client.get_feed(feed_id)
+            current_url = current_feed_data.get("feed_url", "")
+            if not current_url:
+                 logging.error(f"Could not retrieve current URL for feed {feed_id} ({channel_name}) before updating regex.")
+                 await update.message.reply_text("Error: Could not retrieve current feed URL. Cannot update regex.")
+                 return
+
+            logging.info(f"Current URL for {channel_name} (feed ID: {feed_id}): {current_url}")
+
+            # Determine if removing or updating the regex
+            remove_regex = new_regex_raw.lower() in ['none', '-']
+            new_regex_encoded = "" if remove_regex else urllib.parse.quote(new_regex_raw)
+
+            # Construct the new URL
+            parsed_url = urllib.parse.urlparse(current_url)
+            query_params = urllib.parse.parse_qs(parsed_url.query, keep_blank_values=True)
+
+            if remove_regex:
+                if 'exclude_text' in query_params:
+                    del query_params['exclude_text']
+                    logging.info(f"Removing exclude_text parameter for {channel_name}.")
+            elif new_regex_encoded:
+                query_params['exclude_text'] = [new_regex_encoded]
+                logging.info(f"Setting/updating exclude_text parameter for {channel_name} to encoded value: {new_regex_encoded}")
+            else:
+                if 'exclude_text' in query_params:
+                    del query_params['exclude_text']
+                    logging.info(f"Removing exclude_text parameter for {channel_name} due to empty input.")
+
+            # Rebuild the URL
+            new_query_string = urllib.parse.urlencode(query_params, doseq=True)
+            new_url = urllib.parse.urlunparse((
+                parsed_url.scheme,
+                parsed_url.netloc,
+                parsed_url.path,
+                parsed_url.params,
+                new_query_string,
+                parsed_url.fragment
+            ))
+
+            logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
+
+            # Update the feed URL using the existing function
+            success, updated_url_from_miniflux, error_message = update_feed_url(feed_id, new_url)
+
+            if success:
+                if remove_regex or not new_regex_encoded:
+                     await update.message.reply_text(f"Regex filter removed for channel @{channel_name}.")
+                else:
+                     await update.message.reply_text(f"Regex for channel @{channel_name} updated to: {new_regex_raw}")
+
+                # Show the flag keyboard again
+                try:
+                    updated_feed_after_regex = miniflux_client.get_feed(feed_id)
+                    feed_url_after_regex = updated_feed_after_regex.get("feed_url", "")
+                    current_flags_after_regex = []
+                    parsed_url_after = urllib.parse.urlparse(feed_url_after_regex)
+                    query_params_after = urllib.parse.parse_qs(parsed_url_after.query)
+                    if 'exclude_flags' in query_params_after:
+                        current_flags_after_regex = query_params_after['exclude_flags'][0].split(',')
+
+                    keyboard = create_flag_keyboard(channel_name, current_flags_after_regex)
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await update.message.reply_text(f"Updated options for @{channel_name}:", reply_markup=reply_markup)
+                    logging.info(f"Displayed updated options keyboard for {channel_name} after regex update.")
+
+                except Exception as e_flags:
+                    logging.error(f"Failed to fetch flags/show keyboard after regex update for {channel_name}: {e_flags}")
+
+            else:
+                logging.error(f"Failed to update feed URL for {channel_name} (feed ID: {feed_id}) with new regex. Error: {error_message}. Attempted URL: {new_url}")
+                await update.message.reply_text(f"Failed to update regex for channel @{channel_name}. Miniflux error: {error_message}")
+
+        except Exception as e:
+            logging.error(f"Error processing new regex for {channel_name}: {e}", exc_info=True)
+            await update.message.reply_text(f"An unexpected error occurred while updating the regex: {str(e)}")
+
+        return
+
     # Check if this message is part of a media group we've already processed
     media_group_id = msg.media_group_id
     if media_group_id and context.user_data.get("processed_media_group_id") == media_group_id:
@@ -322,127 +422,6 @@ async def handle_message(update: Update, context: CallbackContext):
 
     await update.message.chat.send_action("typing")
 
-    # --- Check for state: awaiting_regex ---
-    if context.user_data.get('state') == 'awaiting_regex':
-        channel_name = context.user_data.get('editing_regex_for_channel')
-        feed_id = context.user_data.get('editing_feed_id')
-        new_regex_raw = msg.text.strip() if msg.text else ""
-
-        # Clean up state regardless of success/failure below
-        if 'state' in context.user_data: del context.user_data['state']
-        if 'editing_regex_for_channel' in context.user_data: del context.user_data['editing_regex_for_channel']
-        if 'editing_feed_id' in context.user_data: del context.user_data['editing_feed_id']
-        logging.info(f"Processing new regex for channel {channel_name} (feed ID: {feed_id}). State cleared.")
-
-        if not channel_name or not feed_id:
-            logging.error("State 'awaiting_regex' was set, but channel_name or feed_id missing from context.")
-            await update.message.reply_text("Error: Missing context for regex update. Please try editing again.")
-            return # Stop processing this message
-
-        await update.message.chat.send_action("typing")
-
-        try:
-            # Fetch the current feed URL again to build the new one
-            current_feed_data = miniflux_client.get_feed(feed_id)
-            current_url = current_feed_data.get("feed_url", "")
-            if not current_url:
-                 logging.error(f"Could not retrieve current URL for feed {feed_id} ({channel_name}) before updating regex.")
-                 await update.message.reply_text("Error: Could not retrieve current feed URL. Cannot update regex.")
-                 return
-
-            logging.info(f"Current URL for {channel_name} (feed ID: {feed_id}): {current_url}")
-
-            # Determine if removing or updating the regex
-            remove_regex = new_regex_raw.lower() in ['none', '-']
-            new_regex_encoded = "" if remove_regex else urllib.parse.quote(new_regex_raw)
-
-            # Construct the new URL
-            parsed_url = urllib.parse.urlparse(current_url)
-            query_params = urllib.parse.parse_qs(parsed_url.query, keep_blank_values=True) # Keep blank values
-
-            if remove_regex:
-                if 'exclude_text' in query_params:
-                    del query_params['exclude_text']
-                    logging.info(f"Removing exclude_text parameter for {channel_name}.")
-            elif new_regex_encoded: # Only add/update if new regex is not empty
-                query_params['exclude_text'] = [new_regex_encoded] # Set or overwrite
-                logging.info(f"Setting/updating exclude_text parameter for {channel_name} to encoded value: {new_regex_encoded}")
-            else:
-                # User sent empty message but not 'none' or '-', maybe ignore or treat as remove?
-                # Let's treat empty as remove for simplicity. If user wants empty regex, it is strange anyway.
-                if 'exclude_text' in query_params:
-                    del query_params['exclude_text']
-                    logging.info(f"Removing exclude_text parameter for {channel_name} due to empty input.")
-
-            # Rebuild the URL
-            new_query_string = urllib.parse.urlencode(query_params, doseq=True)
-            new_url = urllib.parse.urlunparse((
-                parsed_url.scheme,
-                parsed_url.netloc,
-                parsed_url.path,
-                parsed_url.params,
-                new_query_string,
-                parsed_url.fragment
-            ))
-
-            logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
-
-            # Update the feed URL using the existing function
-            success, updated_url_from_miniflux, error_message = update_feed_url(feed_id, new_url)
-
-            if success:
-                if remove_regex or not new_regex_encoded:
-                     final_message = f"Regex filter removed for channel @{channel_name}."
-                else:
-                     # Escape for display
-                     safe_new_regex = new_regex_raw.replace('_', '\\\\_').replace('*', '\\\\*').replace('[', '\\\\[').replace(']', '\\\\]').replace('(', '\\\\(').replace(')', '\\\\)').replace('~', '\\\\~').replace('`', '\\\\`').replace('>', '\\\\>').replace('#', '\\\\#').replace('+', '\\\\+').replace('-', '\\\\-').replace('=', '\\\\=').replace('|', '\\\\|').replace('{', '\\\\{').replace('}', '\\\\}').replace('.', '\\\\.').replace('!', '\\\\!')
-                     final_message = f"Regex for channel @{channel_name} updated to:\\n`{safe_new_regex}`"
-                await update.message.reply_text(final_message, parse_mode='MarkdownV2')
-
-                # --- Optional: Show the flag keyboard again ---
-                # Fetch current flags to display the keyboard correctly after update
-                try:
-                    updated_feed_after_regex = miniflux_client.get_feed(feed_id)
-                    feed_url_after_regex = updated_feed_after_regex.get("feed_url", "")
-                    current_flags_after_regex = []
-                    parsed_url_after = urllib.parse.urlparse(feed_url_after_regex)
-                    query_params_after = urllib.parse.parse_qs(parsed_url_after.query)
-                    if 'exclude_flags' in query_params_after:
-                        current_flags_after_regex = query_params_after['exclude_flags'][0].split(',')
-
-                    keyboard = create_flag_keyboard(channel_username, current_flags_after_regex)
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    await update.message.reply_text(f"Updated options for @{channel_username}:", reply_markup=reply_markup)
-                    logging.info(f"Displayed updated options keyboard for {channel_username} after regex update.")
-
-                except Exception as e_flags:
-                    logging.error(f"Failed to fetch flags/show keyboard after regex update for {channel_username}: {e_flags}")
-                    # Non-critical error, just log it. The main update succeeded.
-
-            else:
-                logging.error(f"Failed to update feed URL for {channel_username} (feed ID: {feed_id}) with new regex. Error: {error_message}. Attempted URL: {new_url}")
-                await update.message.reply_text(f"Failed to update regex for channel @{channel_username}. Miniflux error: {error_message}")
-
-        except Exception as e:
-            logging.error(f"Error processing new regex for {channel_username}: {e}", exc_info=True)
-            await update.message.reply_text(f"An unexpected error occurred while updating the regex: {str(e)}")
-
-        return # Important: Stop processing after handling the state
-
-    # --- Existing logic for forwards/links starts here ---
-    # (Make sure the code above is placed *before* this section)
-
-    # Check if this message is part of a media group we've already processed
-    media_group_id = msg.media_group_id
-    if media_group_id:
-        context.user_data["processed_media_group_id"] = media_group_id
-        logging.info(f"Processing first message from media group {media_group_id}")
-
-    # Store channel title/username for later use
-    context.user_data["channel_title"] = channel_username
-    logging.info(f"Processing channel identified as: {channel_username} (Source: {channel_source_type})")
-
-    await update.message.chat.send_action("typing")
     try:
         feeds = miniflux_client.get_feeds()
         target_feed = None
