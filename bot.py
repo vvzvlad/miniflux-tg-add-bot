@@ -19,13 +19,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logging.getLogger("telegram.utils.request").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# Global Miniflux client initialized from environment variables
 MINIFLUX_BASE_URL = os.environ.get("MINIFLUX_BASE_URL")
 MINIFLUX_USERNAME = os.environ.get("MINIFLUX_USERNAME")
 MINIFLUX_PASSWORD = os.environ.get("MINIFLUX_PASSWORD")
 MINIFLUX_API_KEY = os.environ.get("MINIFLUX_API_KEY")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")  # Get bot token from environment variable
-RSS_BRIDGE_URL = os.environ.get("RSS_BRIDGE_URL")  # RSS bridge URL 
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+RSS_BRIDGE_URL = os.environ.get("RSS_BRIDGE_URL")
 ADMIN_USERNAME = os.environ.get("ADMIN")
 ACCEPT_CHANNELS_WITOUT_USERNAME = os.environ.get("ACCEPT_CHANNELS_WITOUT_USERNAME", "false")
 
@@ -545,8 +544,6 @@ async def handle_message(update: Update, context: CallbackContext):
             keyboard = []
             for i, link in enumerate(rss_links):
                 title = link.get('title', f"RSS Feed {i+1}")
-                href = link.get('href')
-                # Store href in callback data with prefix to identify it
                 keyboard.append([InlineKeyboardButton(title, callback_data=f"rss_link_{i}")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
