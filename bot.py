@@ -6,6 +6,7 @@ import urllib.parse
 import time
 import requests
 from http import HTTPStatus
+from bs4 import BeautifulSoup
 
 import miniflux
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -247,37 +248,108 @@ async def list_channels(update: Update, _context: CallbackContext):
         logging.error(f"Failed to list channels: {error}", exc_info=True)
         await update.message.reply_text(f"Failed to list channels: {str(error)}")
 
+def extract_rss_links_from_html(html_content, base_url):
+    """
+    Extract RSS feed links from HTML content by looking for link tags.
+    
+    Args:
+        html_content: HTML content as string
+        base_url: Base URL for resolving relative links
+        
+    Returns:
+        list: List of dictionaries with title and href for each RSS link found
+    """
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        rss_links = []
+        
+        # Find all link tags that might contain RSS feeds
+        link_tags = soup.find_all('link', rel='alternate')
+        
+        for link in link_tags:
+            link_type = link.get('type', '').lower()
+            
+            # Check if it's an RSS or Atom feed
+            if any(rss_type in link_type for rss_type in ['application/rss+xml', 'application/atom+xml']):
+                href = link.get('href', '')
+                title = link.get('title', 'RSS Feed')
+                
+                # Handle relative URLs
+                if href and not href.startswith(('http://', 'https://')):
+                    href = urllib.parse.urljoin(base_url, href)
+                
+                if href:
+                    rss_links.append({
+                        'title': title,
+                        'href': href
+                    })
+        
+        logging.info(f"Found {len(rss_links)} RSS links in HTML content from {base_url}")
+        return rss_links
+    
+    except Exception as e:
+        logging.error(f"Error extracting RSS links from HTML: {e}")
+        return []
+
 def is_valid_rss_url(url):
     """
     Check if the provided URL is a valid RSS feed by examining its content type.
+    If not a direct RSS feed, try to find RSS links in HTML content.
     
     Args:
         url: URL to check
         
     Returns:
-        bool: True if the URL appears to be a valid RSS feed, False otherwise
+        tuple: (is_valid, feed_url_or_links)
+            - If direct RSS feed: (True, original_url)
+            - If HTML with RSS links: (False, list_of_rss_links)
+            - If neither: (False, [])
     """
     try:
         # First try a HEAD request to check content type without downloading the entire feed
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'}
         response = requests.head(url, headers=headers, timeout=10)
         
-        # If HEAD doesn't work (some servers don't support it), try a GET
-        if response.status_code != HTTPStatus.OK:
-            response = requests.get(url, headers=headers, timeout=10, stream=True)
-            # Close the connection without downloading all content
-            response.close()
-        
         content_type = response.headers.get('Content-Type', '').lower()
         logging.info(f"URL {url} returned Content-Type: {content_type}")
         
         # Check for RSS/Atom content types
         valid_types = ['application/rss+xml', 'application/atom+xml', 'application/xml', 'text/xml', 'rss', 'atom']
-        return any(rss_type in content_type for rss_type in valid_types)
+        
+        # If it's already a valid RSS feed, return it directly
+        if any(rss_type in content_type for rss_type in valid_types):
+            return True, url
+        
+        # If content type is HTML, check for RSS link tags
+        if 'text/html' in content_type:
+            # Need to do a GET request to fetch the HTML content
+            response = requests.get(url, headers=headers, timeout=10)
+            rss_links = extract_rss_links_from_html(response.text, url)
+            
+            if rss_links:
+                return False, rss_links
+        
+        # If HEAD request failed or returned unexpected content type, try GET
+        if 'text/html' not in content_type and response.status_code != HTTPStatus.OK:
+            response = requests.get(url, headers=headers, timeout=10)
+            content_type = response.headers.get('Content-Type', '').lower()
+            
+            # Check again for RSS content types
+            if any(rss_type in content_type for rss_type in valid_types):
+                return True, url
+            
+            # If HTML content, check for RSS links
+            if 'text/html' in content_type:
+                rss_links = extract_rss_links_from_html(response.text, url)
+                if rss_links:
+                    return False, rss_links
+        
+        # Not a valid RSS feed and no RSS links found in HTML
+        return False, []
         
     except Exception as e:
         logging.error(f"Error checking RSS URL {url}: {e}")
-        return False
+        return False, []
 
 async def handle_message(update: Update, context: CallbackContext):
     """
@@ -410,21 +482,25 @@ async def handle_message(update: Update, context: CallbackContext):
     msg_dict = msg.to_dict()
     logging.info(f"Message details:\\n{json.dumps(msg_dict, indent=4)}") # Escaped newline
 
-    # Check if this might be a direct RSS URL
+    # Check if this might be a direct RSS URL or webpage with RSS links
     if msg.text and (msg.text.startswith('http://') or msg.text.startswith('https://')):
         url = msg.text.strip()
-        logging.info(f"Checking if URL is a valid RSS feed: {url}")
+        logging.info(f"Checking if URL is a valid RSS feed or contains RSS links: {url}")
         
         # Add typing indicator
         await update.message.chat.send_action("typing")
         
-        # Check if it's a valid RSS feed
-        if is_valid_rss_url(url):
-            logging.info(f"URL appears to be a valid RSS feed: {url}")
+        # Check if it's a valid RSS feed or webpage with RSS links
+        is_direct_rss, result = is_valid_rss_url(url)
+        
+        if is_direct_rss:
+            # Direct RSS feed handling
+            feed_url = result
+            logging.info(f"URL is a direct RSS feed: {feed_url}")
             
             # Check if feed already exists
             try:
-                if check_feed_exists(miniflux_client, url):
+                if check_feed_exists(miniflux_client, feed_url):
                     await update.message.reply_text(f"This RSS feed is already in your subscriptions.")
                     return
             except Exception as error:
@@ -433,7 +509,7 @@ async def handle_message(update: Update, context: CallbackContext):
                 return
             
             # Store direct RSS URL for later use
-            context.user_data["direct_rss_url"] = url
+            context.user_data["direct_rss_url"] = feed_url
             
             # Fetch categories and show selection dialog
             try:
@@ -456,7 +532,38 @@ async def handle_message(update: Update, context: CallbackContext):
             context.user_data["categories"] = categories_dict  # Save to context
             
             await update.message.reply_text(
-                f"URL appears to be a valid RSS feed. Select category:", reply_markup=reply_markup
+                f"URL is a valid RSS feed. Select category:", reply_markup=reply_markup
+            )
+            return
+        
+        elif isinstance(result, list) and result:
+            # HTML page with RSS links
+            rss_links = result
+            logging.info(f"Found {len(rss_links)} RSS links in the webpage")
+            
+            # Build keyboard for RSS link selection
+            keyboard = []
+            for i, link in enumerate(rss_links):
+                title = link.get('title', f"RSS Feed {i+1}")
+                href = link.get('href')
+                # Store href in callback data with prefix to identify it
+                keyboard.append([InlineKeyboardButton(title, callback_data=f"rss_link_{i}")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # Store the RSS links in context for later retrieval
+            context.user_data["rss_links"] = rss_links
+            
+            await update.message.reply_text(
+                f"Found multiple RSS feeds on the webpage. Select one to subscribe:",
+                reply_markup=reply_markup
+            )
+            return
+            
+        else:
+            # Not a valid RSS feed and no RSS links found
+            await update.message.reply_text(
+                "The URL does not appear to be a valid RSS feed and no RSS links were found on the webpage."
             )
             return
             
@@ -593,7 +700,72 @@ async def button_callback(update: Update, context: CallbackContext):
     await query.answer()
     data = query.data
     
-    if data.startswith("cat_"):
+    # Handle RSS link selection from webpage
+    if data.startswith("rss_link_"):
+        try:
+            # Extract the index of selected RSS link
+            link_index = int(data.split("_")[2])
+            rss_links = context.user_data.get("rss_links", [])
+            
+            if not rss_links or link_index >= len(rss_links):
+                await query.edit_message_text("Invalid RSS link selection or session expired.")
+                return
+            
+            selected_link = rss_links[link_index]
+            feed_url = selected_link.get("href")
+            
+            if not feed_url:
+                await query.edit_message_text("Selected RSS link has no URL.")
+                return
+            
+            # Check if feed already exists
+            try:
+                if check_feed_exists(miniflux_client, feed_url):
+                    await query.edit_message_text(f"This RSS feed is already in your subscriptions.")
+                    return
+            except Exception as error:
+                logging.error(f"Failed to check if feed exists: {error}")
+                await query.edit_message_text(f"Failed to check if feed exists: {str(error)}")
+                return
+            
+            # Store the selected RSS URL for category selection
+            context.user_data["direct_rss_url"] = feed_url
+            # Clear the RSS links list as we've made a selection
+            if "rss_links" in context.user_data:
+                del context.user_data["rss_links"]
+            
+            # Fetch categories for the selected RSS feed
+            try:
+                categories = fetch_categories(miniflux_client)
+            except Exception as error:
+                logging.error(f"Failed to fetch categories: {error}")
+                await query.edit_message_text("Failed to fetch categories from RSS reader.")
+                return
+            
+            # Build inline keyboard with categories
+            keyboard = []
+            categories_dict = {}  # Store category information
+            for category in categories:
+                cat_title = category.get("title", "Unknown")
+                cat_id = category.get("id")
+                categories_dict[cat_id] = cat_title  # Store id -> title mapping
+                keyboard.append([InlineKeyboardButton(cat_title, callback_data=f"cat_{cat_id}")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            context.user_data["categories"] = categories_dict  # Save to context
+            
+            await query.edit_message_text(
+                f"Selected RSS feed: {selected_link.get('title', 'RSS Feed')}\nChoose a category:",
+                reply_markup=reply_markup
+            )
+            return
+            
+        except Exception as e:
+            logging.error(f"Error processing RSS link selection: {e}", exc_info=True)
+            await query.edit_message_text(f"Error processing RSS link selection: {str(e)}")
+            return
+    
+    elif data.startswith("cat_"):
         cat_id_str = data.split("_", 1)[1]
         try:
             cat_id = int(cat_id_str)
