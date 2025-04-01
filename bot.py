@@ -1,15 +1,17 @@
 import logging
 import os
 import json
-import urllib.parse
-import miniflux
-import requests
 import re
+import urllib.parse
+import time
+import requests
+from http import HTTPStatus
+
+import miniflux
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, CallbackContext
 from telegram.ext import filters
 from miniflux import ClientError, ServerError
-import time
 
 # Configure logging with detailed messages
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -245,6 +247,38 @@ async def list_channels(update: Update, _context: CallbackContext):
         logging.error(f"Failed to list channels: {error}", exc_info=True)
         await update.message.reply_text(f"Failed to list channels: {str(error)}")
 
+def is_valid_rss_url(url):
+    """
+    Check if the provided URL is a valid RSS feed by examining its content type.
+    
+    Args:
+        url: URL to check
+        
+    Returns:
+        bool: True if the URL appears to be a valid RSS feed, False otherwise
+    """
+    try:
+        # First try a HEAD request to check content type without downloading the entire feed
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'}
+        response = requests.head(url, headers=headers, timeout=10)
+        
+        # If HEAD doesn't work (some servers don't support it), try a GET
+        if response.status_code != HTTPStatus.OK:
+            response = requests.get(url, headers=headers, timeout=10, stream=True)
+            # Close the connection without downloading all content
+            response.close()
+        
+        content_type = response.headers.get('Content-Type', '').lower()
+        logging.info(f"URL {url} returned Content-Type: {content_type}")
+        
+        # Check for RSS/Atom content types
+        valid_types = ['application/rss+xml', 'application/atom+xml', 'application/xml', 'text/xml', 'rss', 'atom']
+        return any(rss_type in content_type for rss_type in valid_types)
+        
+    except Exception as e:
+        logging.error(f"Error checking RSS URL {url}: {e}")
+        return False
+
 async def handle_message(update: Update, context: CallbackContext):
     """
     Handle incoming messages in private chat.
@@ -376,6 +410,57 @@ async def handle_message(update: Update, context: CallbackContext):
     msg_dict = msg.to_dict()
     logging.info(f"Message details:\\n{json.dumps(msg_dict, indent=4)}") # Escaped newline
 
+    # Check if this might be a direct RSS URL
+    if msg.text and (msg.text.startswith('http://') or msg.text.startswith('https://')):
+        url = msg.text.strip()
+        logging.info(f"Checking if URL is a valid RSS feed: {url}")
+        
+        # Add typing indicator
+        await update.message.chat.send_action("typing")
+        
+        # Check if it's a valid RSS feed
+        if is_valid_rss_url(url):
+            logging.info(f"URL appears to be a valid RSS feed: {url}")
+            
+            # Check if feed already exists
+            try:
+                if check_feed_exists(miniflux_client, url):
+                    await update.message.reply_text(f"This RSS feed is already in your subscriptions.")
+                    return
+            except Exception as error:
+                logging.error(f"Failed to check if feed exists: {error}")
+                await update.message.reply_text(f"Failed to check if feed exists: {str(error)}")
+                return
+            
+            # Store direct RSS URL for later use
+            context.user_data["direct_rss_url"] = url
+            
+            # Fetch categories and show selection dialog
+            try:
+                categories = fetch_categories(miniflux_client)
+            except Exception as error:
+                logging.error(f"Failed to fetch categories: {error}")
+                await update.message.reply_text("Failed to fetch categories from RSS reader.")
+                return
+            
+            # Build inline keyboard with categories
+            keyboard = []
+            categories_dict = {}  # Store category information
+            for category in categories:
+                cat_title = category.get("title", "Unknown")
+                cat_id = category.get("id")
+                categories_dict[cat_id] = cat_title  # Store id -> title mapping
+                keyboard.append([InlineKeyboardButton(cat_title, callback_data=f"cat_{cat_id}")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            context.user_data["categories"] = categories_dict  # Save to context
+            
+            await update.message.reply_text(
+                f"URL appears to be a valid RSS feed. Select category:", reply_markup=reply_markup
+            )
+            return
+            
+    # Continue with existing channel link/forward handling
     channel_username = None
     channel_source_type = None # 'forward' or 'link'
 
@@ -516,6 +601,38 @@ async def button_callback(update: Update, context: CallbackContext):
             await query.edit_message_text("Invalid category ID.")
             return
 
+        # Check if handling direct RSS URL
+        direct_rss_url = context.user_data.get("direct_rss_url")
+        
+        if direct_rss_url:
+            feed_url = direct_rss_url
+            # Clear the stored URL after using it
+            del context.user_data["direct_rss_url"]
+            
+            await query.message.chat.send_action("typing")
+            try:
+                logging.info(f"Subscribing to direct RSS feed '{feed_url}' in category {cat_id}")
+                miniflux_client.create_feed(feed_url, category_id=cat_id)
+                category_title = context.user_data.get("categories", {}).get(cat_id, "Unknown")
+                await query.edit_message_text(
+                    f"Direct RSS feed {feed_url} has been successfully subscribed on {MINIFLUX_BASE_URL} reader instance, added to category '{category_title.strip()}'"
+                )
+            except (ClientError, ServerError) as error:
+                status_code = getattr(error, 'status_code', 'unknown')
+                try:
+                    error_reason = error.get_error_reason()
+                except AttributeError:
+                    error_reason = str(error)
+                
+                error_message = f"Status: {status_code}, Error: {error_reason}"
+                logging.error(f"Miniflux API error while subscribing to feed '{feed_url}': {error_message}")
+                await query.edit_message_text(f"Failed to subscribe to RSS feed '{feed_url}': {error_message}")
+            except Exception as error:
+                logging.error(f"Unexpected error while subscribing to feed '{feed_url}': {str(error)}", exc_info=True)
+                await query.edit_message_text(f"Unexpected error while subscribing to RSS feed: {str(error)}")
+            return
+        
+        # Regular channel subscription logic (existing code)
         channel_title = context.user_data.get("channel_title")
         if not channel_title:
             await query.edit_message_text("Channel information is missing.")
