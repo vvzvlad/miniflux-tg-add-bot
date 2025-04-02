@@ -761,8 +761,9 @@ async def button_callback(update: Update, context: CallbackContext):
                 logging.info(f"Subscribing to direct RSS feed '{feed_url}' in category {cat_id}")
                 miniflux_client.create_feed(feed_url, category_id=cat_id)
                 category_title = context.user_data.get("categories", {}).get(cat_id, "Unknown")
+                url_instance = MINIFLUX_BASE_URL.rstrip('/').replace('http://', '').replace('https://', '')
                 await query.edit_message_text(
-                    f"Direct RSS feed {feed_url} has been successfully subscribed on {MINIFLUX_BASE_URL} reader instance, added to category '{category_title.strip()}'"
+                    f"Direct RSS feed {feed_url} has been subscribed on {url_instance} instance, category '{category_title.strip()}'"
                 )
             except (ClientError, ServerError) as error:
                 status_code = getattr(error, 'status_code', 'unknown')
@@ -793,8 +794,9 @@ async def button_callback(update: Update, context: CallbackContext):
             logging.info(f"Subscribing to feed '{feed_url}' in category {cat_id}")
             miniflux_client.create_feed(feed_url, category_id=cat_id)
             category_title = context.user_data.get("categories", {}).get(cat_id, "Unknown")
+            url_instance = MINIFLUX_BASE_URL.rstrip('/').replace('http://', '').replace('https://', '')
             await query.edit_message_text(
-                f"Channel @{channel_title} has been successfully subscribed on {MINIFLUX_BASE_URL} reader instance, added to category '{category_title.strip()}', used RSS bridge {feed_url}"
+                f"Channel @{channel_title} has been subscribed on {url_instance} instance, added to category '{category_title.strip()}'"
             )
         except (ClientError, ServerError) as error:
             status_code = getattr(error, 'status_code', 'unknown')
