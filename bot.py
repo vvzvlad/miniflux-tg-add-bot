@@ -356,6 +356,7 @@ async def handle_message(update: Update, context: CallbackContext):
     If the message is forwarded from a channel OR contains a link to a channel message,
     fetch categories and ask user to select one.
     If the state is 'awaiting_regex', update the regex for the specified channel.
+    If the state is 'awaiting_merge_time', update the merge time for the specified channel.
     Only processes messages from admin user.
     """
     msg = update.message
@@ -470,6 +471,146 @@ async def handle_message(update: Update, context: CallbackContext):
             logging.error(f"Error processing new regex for {channel_name}: {e}", exc_info=True)
             await update.message.reply_text(f"An unexpected error occurred while updating the regex: {str(e)}")
         
+        return
+
+    # Check if we are awaiting merge time input
+    elif context.user_data.get('state') == 'awaiting_merge_time':
+        channel_name = context.user_data.get('editing_merge_time_for_channel')
+        feed_id = context.user_data.get('editing_feed_id')
+        new_merge_time_raw = msg.text.strip() if msg.text else ""
+
+        # Clean up state
+        if 'state' in context.user_data: del context.user_data['state']
+        if 'editing_merge_time_for_channel' in context.user_data: del context.user_data['editing_merge_time_for_channel']
+        if 'editing_feed_id' in context.user_data: del context.user_data['editing_feed_id']
+        logging.info(f"Processing new merge time for channel {channel_name} (feed ID: {feed_id}). State cleared.")
+
+        if not channel_name or not feed_id:
+            logging.error("State 'awaiting_merge_time' was set, but channel_name or feed_id missing from context.")
+            await update.message.reply_text("Error: Missing context for merge time update. Please try editing again.")
+            return
+
+        new_merge_seconds = None
+        remove_merge_time = False
+        if not new_merge_time_raw:
+            remove_merge_time = True
+            logging.info(f"Received empty input for merge time for {channel_name}. Will remove the parameter.")
+        else:
+            try:
+                new_merge_seconds = int(new_merge_time_raw)
+                if new_merge_seconds < 0:
+                    await update.message.reply_text("Merge time must be a non-negative number (or 0 to disable). Please try again.")
+                    # Re-show keyboard without asking for input again, allowing user to retry edit
+                    try:
+                        feed_after_error = miniflux_client.get_feed(feed_id)
+                        feed_url_after_error = feed_after_error.get("feed_url", "")
+                        current_flags_after_error = []
+                        parsed_url_after = urllib.parse.urlparse(feed_url_after_error)
+                        query_params_after = urllib.parse.parse_qs(parsed_url_after.query)
+                        if 'exclude_flags' in query_params_after:
+                            current_flags_after_error = query_params_after['exclude_flags'][0].split(',')
+                        keyboard = create_flag_keyboard(channel_name, current_flags_after_error)
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        await update.message.reply_text(f"Options for @{channel_name}. Choose an action:", reply_markup=reply_markup)
+                    except Exception as e_flags_err:
+                        logging.error(f"Failed to show keyboard after invalid merge time input for {channel_name}: {e_flags_err}")
+                    return
+                elif new_merge_seconds == 0:
+                    remove_merge_time = True
+                    logging.info(f"Received 0 for merge time for {channel_name}. Will remove the parameter.")
+                else:
+                    logging.info(f"Received new merge time for {channel_name}: {new_merge_seconds} seconds.")
+            except ValueError:
+                await update.message.reply_text("Invalid input. Please send a number for merge time (seconds), or 0 to disable.")
+                # Re-show keyboard without asking for input again
+                try:
+                    feed_after_error = miniflux_client.get_feed(feed_id)
+                    feed_url_after_error = feed_after_error.get("feed_url", "")
+                    current_flags_after_error = []
+                    parsed_url_after = urllib.parse.urlparse(feed_url_after_error)
+                    query_params_after = urllib.parse.parse_qs(parsed_url_after.query)
+                    if 'exclude_flags' in query_params_after:
+                        current_flags_after_error = query_params_after['exclude_flags'][0].split(',')
+                    keyboard = create_flag_keyboard(channel_name, current_flags_after_error)
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await update.message.reply_text(f"Options for @{channel_name}. Choose an action:", reply_markup=reply_markup)
+                except Exception as e_flags_err:
+                    logging.error(f"Failed to show keyboard after invalid merge time input for {channel_name}: {e_flags_err}")
+                return
+
+        await update.message.chat.send_action("typing")
+
+        try:
+            # Fetch the current feed URL again to build the new one
+            current_feed_data = miniflux_client.get_feed(feed_id)
+            current_url = current_feed_data.get("feed_url", "")
+            if not current_url:
+                logging.error(f"Could not retrieve current URL for feed {feed_id} ({channel_name}) before updating merge time.")
+                await update.message.reply_text("Error: Could not retrieve current feed URL. Cannot update merge time.")
+                return
+
+            logging.info(f"Current URL for {channel_name} (feed ID: {feed_id}): {current_url}")
+
+            # Construct the new URL dictionary
+            parsed_url = urllib.parse.urlparse(current_url)
+            query_params = urllib.parse.parse_qs(parsed_url.query, keep_blank_values=True)
+
+            if remove_merge_time:
+                if 'merge_seconds' in query_params:
+                    del query_params['merge_seconds']
+                    logging.info(f"Removing merge_seconds parameter for {channel_name}.")
+            elif new_merge_seconds is not None: # Should always be true unless input was invalid (handled above)
+                query_params['merge_seconds'] = [str(new_merge_seconds)]
+                logging.info(f"Setting/updating merge_seconds parameter for {channel_name} to {new_merge_seconds}.")
+
+            # Rebuild the URL query string
+            new_query_string = urllib.parse.urlencode(query_params, doseq=True)
+
+            new_url = urllib.parse.urlunparse((
+                parsed_url.scheme,
+                parsed_url.netloc,
+                parsed_url.path,
+                parsed_url.params,
+                new_query_string,
+                parsed_url.fragment
+            ))
+
+            logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
+
+            # Update the feed URL
+            success, _updated_url_from_miniflux, error_message = update_feed_url(feed_id, new_url)
+
+            if success:
+                if remove_merge_time:
+                    await update.message.reply_text(f"Merge time filter removed for channel @{channel_name}.")
+                else:
+                    await update.message.reply_text(f"Merge time for channel @{channel_name} updated to: {new_merge_seconds} seconds.")
+
+                # Show the flag keyboard again with updated options
+                try:
+                    updated_feed_after_merge = miniflux_client.get_feed(feed_id)
+                    feed_url_after_merge = updated_feed_after_merge.get("feed_url", "")
+                    current_flags_after_merge = []
+                    parsed_url_after = urllib.parse.urlparse(feed_url_after_merge)
+                    query_params_after = urllib.parse.parse_qs(parsed_url_after.query)
+                    if 'exclude_flags' in query_params_after:
+                        current_flags_after_merge = query_params_after['exclude_flags'][0].split(',')
+
+                    keyboard = create_flag_keyboard(channel_name, current_flags_after_merge)
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await update.message.reply_text(f"Updated options for @{channel_name}. Choose an action:", reply_markup=reply_markup)
+                    logging.info(f"Displayed updated options keyboard for {channel_name} after merge time update.")
+                except Exception as e_flags:
+                    logging.error(f"Failed to fetch flags/show keyboard after merge time update for {channel_name}: {e_flags}")
+
+            else:
+                logging.error(f"Failed to update feed URL for {channel_name} (feed ID: {feed_id}) with new merge time. Error: {error_message}. Attempted URL: {new_url}")
+                await update.message.reply_text(f"Failed to update merge time for channel @{channel_name}. Miniflux error: {error_message}")
+
+        except Exception as e:
+            logging.error(f"Error processing new merge time for {channel_name}: {e}", exc_info=True)
+            await update.message.reply_text(f"An unexpected error occurred while updating the merge time: {str(e)}")
+
         return
 
     # Check if this message is part of a media group we've already processed
@@ -1035,6 +1176,81 @@ async def button_callback(update: Update, context: CallbackContext):
             error_msg = str(e)
             await query.edit_message_text(f"Failed to start regex edit: {error_msg}") # Removed parse_mode here too for consistency
 
+    elif data.startswith("edit_merge_time|"):
+        # Handle edit merge time button
+        channel_name = data.split("|", 1)[1]
+
+        await query.message.chat.send_action("typing")
+        try:
+            # Find the feed for the channel
+            feeds = miniflux_client.get_feeds()
+            target_feed = None
+            feed_url = ""
+            feed_id = None
+            current_merge_seconds = None
+
+            for feed in feeds:
+                feed_url_check = feed.get("feed_url", "")
+                channel = extract_channel_from_feed_url(feed_url_check)
+                if channel and channel.lower() == channel_name.lower():
+                    target_feed = feed
+                    feed_id = feed.get("id")
+                    if not feed_id:
+                        logging.warning(f"Feed ID not found for channel {channel_name} during merge time edit prep.")
+                        continue
+                    try:
+                        updated_target_feed = miniflux_client.get_feed(feed_id)
+                        feed_url = updated_target_feed.get("feed_url", "")
+                        logging.info(f"Fetched current feed URL for {channel_name} (ID: {feed_id}): {feed_url}")
+                    except Exception as fetch_error:
+                        logging.error(f"Failed to fetch feed details for {feed_id} ({channel_name}) during merge time edit prep: {fetch_error}")
+                        await query.edit_message_text(f"Error fetching current feed details for @{channel_name}.")
+                        return
+                    break
+
+            if not target_feed or not feed_id:
+                logging.warning(f"Target feed or feed_id not found for {channel_name} after searching feeds.")
+                await query.edit_message_text(f"Channel @{channel_name} not found in subscriptions or feed ID missing.")
+                return
+
+            # Extract current merge_seconds from the feed URL
+            parsed_url = urllib.parse.urlparse(feed_url)
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            if 'merge_seconds' in query_params:
+                try:
+                    current_merge_seconds = int(query_params['merge_seconds'][0])
+                    logging.info(f"Found current merge_seconds for {channel_name}: {current_merge_seconds}")
+                except (ValueError, IndexError):
+                    logging.warning(f"Invalid merge_seconds value found for {channel_name} in URL: {query_params.get('merge_seconds')}")
+                    current_merge_seconds = None # Treat invalid as None
+            else:
+                logging.info(f"No current merge_seconds found for {channel_name}")
+
+            # Store necessary info and set state for the next message handler
+            context.user_data['state'] = 'awaiting_merge_time'
+            context.user_data['editing_merge_time_for_channel'] = channel_name
+            context.user_data['editing_feed_id'] = feed_id
+            logging.info(f"Set state to 'awaiting_merge_time' for channel {channel_name} (feed ID: {feed_id})")
+
+            # Prepare message asking for new merge time
+            prompt_message = f"Editing merge time for @{channel_name}.\n"
+            if current_merge_seconds is not None:
+                prompt_message += f"Current merge time: {current_merge_seconds} seconds.\n\n"
+            else:
+                prompt_message += "Merge time is not currently set.\n\n"
+            prompt_message += "Please send the new merge time in seconds (e.g., 300). Send 0 or empty message to disable merging (remove the parameter)."
+
+            await query.edit_message_text(prompt_message)
+
+        except Exception as e:
+            logging.error(f"Failed during edit_merge_time preparation for {channel_name}: {e}", exc_info=True)
+            # Reset state if error occurs during preparation
+            if 'state' in context.user_data: del context.user_data['state']
+            if 'editing_merge_time_for_channel' in context.user_data: del context.user_data['editing_merge_time_for_channel']
+            if 'editing_feed_id' in context.user_data: del context.user_data['editing_feed_id']
+            error_msg = str(e)
+            await query.edit_message_text(f"Failed to start merge time edit: {error_msg}")
+
 async def add_flag_to_channel(channel_name, flag_to_add):
     """
     Add a flag to a channel subscription.
@@ -1256,6 +1472,9 @@ def create_flag_keyboard(channel_username, current_flags):
 
     # Add Edit Regex button
     keyboard.append([InlineKeyboardButton("Edit Regex", callback_data=f"edit_regex|{channel_username}")])
+
+    # Add Edit Merge Time button
+    keyboard.append([InlineKeyboardButton("Edit Merge Time", callback_data=f"edit_merge_time|{channel_username}")])
 
     # Add delete button at the bottom
     keyboard.append([InlineKeyboardButton("Delete channel", callback_data=f"delete|{channel_username}")])
