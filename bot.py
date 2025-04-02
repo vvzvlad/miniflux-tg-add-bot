@@ -469,7 +469,7 @@ async def handle_message(update: Update, context: CallbackContext):
         except Exception as e:
             logging.error(f"Error processing new regex for {channel_name}: {e}", exc_info=True)
             await update.message.reply_text(f"An unexpected error occurred while updating the regex: {str(e)}")
-
+        
         return
 
     # Check if this message is part of a media group we've already processed
@@ -481,92 +481,10 @@ async def handle_message(update: Update, context: CallbackContext):
     msg_dict = msg.to_dict()
     logging.info(f"Message details:\\n{json.dumps(msg_dict, indent=4)}") # Escaped newline
 
-    # Check if this might be a direct RSS URL or webpage with RSS links
-    if msg.text and (msg.text.startswith('http://') or msg.text.startswith('https://')):
-        url = msg.text.strip()
-        logging.info(f"Checking if URL is a valid RSS feed or contains RSS links: {url}")
-        
-        # Add typing indicator
-        await update.message.chat.send_action("typing")
-        
-        # Check if it's a valid RSS feed or webpage with RSS links
-        is_direct_rss, result = is_valid_rss_url(url)
-        
-        if is_direct_rss:
-            # Direct RSS feed handling
-            feed_url = result
-            logging.info(f"URL is a direct RSS feed: {feed_url}")
-            
-            # Check if feed already exists
-            try:
-                if check_feed_exists(miniflux_client, feed_url):
-                    await update.message.reply_text(f"This RSS feed is already in your subscriptions.")
-                    return
-            except Exception as error:
-                logging.error(f"Failed to check if feed exists: {error}")
-                await update.message.reply_text(f"Failed to check if feed exists: {str(error)}")
-                return
-            
-            # Store direct RSS URL for later use
-            context.user_data["direct_rss_url"] = feed_url
-            
-            # Fetch categories and show selection dialog
-            try:
-                categories = fetch_categories(miniflux_client)
-            except Exception as error:
-                logging.error(f"Failed to fetch categories: {error}")
-                await update.message.reply_text("Failed to fetch categories from RSS reader.")
-                return
-            
-            # Build inline keyboard with categories
-            keyboard = []
-            categories_dict = {}  # Store category information
-            for category in categories:
-                cat_title = category.get("title", "Unknown")
-                cat_id = category.get("id")
-                categories_dict[cat_id] = cat_title  # Store id -> title mapping
-                keyboard.append([InlineKeyboardButton(cat_title, callback_data=f"cat_{cat_id}")])
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            context.user_data["categories"] = categories_dict  # Save to context
-            
-            await update.message.reply_text(
-                f"URL is a valid RSS feed. Select category:", reply_markup=reply_markup
-            )
-            return
-        
-        elif isinstance(result, list) and result:
-            # HTML page with RSS links
-            rss_links = result
-            logging.info(f"Found {len(rss_links)} RSS links in the webpage")
-            
-            # Build keyboard for RSS link selection
-            keyboard = []
-            for i, link in enumerate(rss_links):
-                title = link.get('title', f"RSS Feed {i+1}")
-                keyboard.append([InlineKeyboardButton(title, callback_data=f"rss_link_{i}")])
-            
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            # Store the RSS links in context for later retrieval
-            context.user_data["rss_links"] = rss_links
-            
-            await update.message.reply_text(
-                f"Found multiple RSS feeds on the webpage. Select one to subscribe:",
-                reply_markup=reply_markup
-            )
-            return
-            
-        else:
-            # Not a valid RSS feed and no RSS links found
-            await update.message.reply_text(
-                "The URL does not appear to be a valid RSS feed and no RSS links were found on the webpage."
-            )
-            return
-            
-    # Continue with existing channel link/forward handling
     channel_username = None
     channel_source_type = None # 'forward' or 'link'
+    direct_rss_url = None
+    html_rss_links = None
 
     # 1. Check for forward
     forward_chat = msg_dict.get("forward_from_chat")
@@ -592,7 +510,10 @@ async def handle_message(update: Update, context: CallbackContext):
 
     # 2. If not a forward, check for link in message text
     elif msg.text:
-        parsed_channel = parse_telegram_link(msg.text)
+        text = msg.text.strip()
+        
+        # First, try parsing as a Telegram link
+        parsed_channel = parse_telegram_link(text)
         if parsed_channel:
             logging.info(f"Processing link to message from channel: {parsed_channel}")
             channel_username = parsed_channel
@@ -601,93 +522,150 @@ async def handle_message(update: Update, context: CallbackContext):
             if media_group_id:
                 context.user_data["processed_media_group_id"] = media_group_id
                 logging.info(f"Processing first linked message from media group {media_group_id}")
-
-    # 3. If neither forward nor valid link
-    if not channel_username:
-        logging.info("Message is not a forward from a channel or a valid channel link.")
-        # Updated prompt
-        await update.message.reply_text("Please forward a message from any channel (public or private) or send a link to a message (e.g., https://t.me/channel_name/123 or https://t.me/-1002069358234/1951).")
-        return
-
-    # Store channel title/username for later use
-    context.user_data["channel_title"] = channel_username
-    logging.info(f"Processing channel identified as: {channel_username} (Source: {channel_source_type})")
-
-    await update.message.chat.send_action("typing")
-
-    try:
-        feeds = miniflux_client.get_feeds()
-        target_feed = None
-
-        # --- Simplified Check --- 
-        # Compare the target channel name with the channel name extracted from existing feed URLs
-        for feed in feeds:
-            feed_url_check = feed.get("feed_url", "")
-            existing_channel_name = extract_channel_from_feed_url(feed_url_check)
+        
+        # If not a Telegram link, check if it's a direct RSS/HTML URL
+        elif text.startswith('http://') or text.startswith('https://'):
+            url = text
+            logging.info(f"Checking if URL is a valid RSS feed or contains RSS links: {url}")
+            await update.message.chat.send_action("typing")
+            is_direct_rss, result = is_valid_rss_url(url)
             
-            # Compare case-insensitively
-            if existing_channel_name and channel_username.lower() == existing_channel_name.lower():
-                target_feed = feed
-                logging.info(f"Found existing feed for channel '{channel_username}': ID={feed.get('id')}, URL={feed_url_check}")
-                break # Found a match
+            if is_direct_rss:
+                direct_rss_url = result
+                logging.info(f"URL is a direct RSS feed: {direct_rss_url}")
+            elif isinstance(result, list) and result:
+                html_rss_links = result
+                logging.info(f"Found {len(html_rss_links)} RSS links in the webpage")
+            # else: URL is neither direct RSS nor HTML with RSS links
 
-        if target_feed:
-            logging.info(f"Channel @{channel_username} is already in subscriptions (matched channel name)")
+    # 3. Process based on what was found
 
-            # Fetch current flags for the existing feed
-            feed_id = target_feed.get("id")
-            try:
-                # Get the most up-to-date feed data to ensure flags are current
-                updated_target_feed = miniflux_client.get_feed(feed_id)
-                feed_url_current = updated_target_feed.get("feed_url", "")
-                current_flags = []
-                if "exclude_flags=" in feed_url_current:
-                    flags_part = feed_url_current.split("exclude_flags=")[1].split("&")[0]
-                    current_flags = flags_part.split(",")
-                logging.info(f"Current flags for @{channel_username}: {current_flags}")
-            except Exception as e:
-                logging.error(f"Failed to fetch current flags for feed {feed_id}: {e}")
-                await update.message.reply_text("Error fetching current flag status. Proceeding without status.")
-                current_flags = [] # Proceed without flag status if fetch fails
+    # Case A: Telegram channel (forward or link)
+    if channel_username:
+        context.user_data["channel_title"] = channel_username
+        logging.info(f"Processing Telegram channel identified as: {channel_username} (Source: {channel_source_type})")
+        await update.message.chat.send_action("typing")
+        try:
+            feeds = miniflux_client.get_feeds()
+            target_feed = None
+            for feed in feeds:
+                feed_url_check = feed.get("feed_url", "")
+                existing_channel_name = extract_channel_from_feed_url(feed_url_check)
+                if existing_channel_name and channel_username.lower() == existing_channel_name.lower():
+                    target_feed = feed
+                    logging.info(f"Found existing feed for channel '{channel_username}': ID={feed.get('id')}, URL={feed_url_check}")
+                    break
 
-            # Create keyboard with current flag statuses
-            keyboard = create_flag_keyboard(channel_username, current_flags)
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            if target_feed:
+                logging.info(f"Channel @{channel_username} is already in subscriptions (matched channel name)")
+                feed_id = target_feed.get("id")
+                try:
+                    updated_target_feed = miniflux_client.get_feed(feed_id)
+                    feed_url_current = updated_target_feed.get("feed_url", "")
+                    current_flags = []
+                    if "exclude_flags=" in feed_url_current:
+                        flags_part = feed_url_current.split("exclude_flags=")[1].split("&")[0]
+                        current_flags = flags_part.split(",")
+                    logging.info(f"Current flags for @{channel_username}: {current_flags}")
+                except Exception as e:
+                    logging.error(f"Failed to fetch current flags for feed {feed_id}: {e}")
+                    await update.message.reply_text("Error fetching current flag status. Proceeding without status.")
+                    current_flags = []
 
-            await update.message.reply_text(
-                f"Channel @{channel_username} is already in subscriptions. Choose an action:",
-                reply_markup=reply_markup
-            )
+                keyboard = create_flag_keyboard(channel_username, current_flags)
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_text(
+                    f"Channel @{channel_username} is already in subscriptions. Choose an action:",
+                    reply_markup=reply_markup
+                )
+                return
+
+        except Exception as error:
+            logging.error(f"Failed to check subscriptions or get existing feed details: {error}", exc_info=True)
+            await update.message.reply_text("Failed to check existing subscriptions.")
             return
 
-    except Exception as error:
-        logging.error(f"Failed to check subscriptions or get existing feed details: {error}", exc_info=True)
-        await update.message.reply_text("Failed to check existing subscriptions.")
+        # --- Channel feed does not exist, proceed with category selection --- 
+        try:
+            categories = fetch_categories(miniflux_client)
+        except Exception as error:
+            logging.error(f"Failed to fetch categories: {error}")
+            await update.message.reply_text("Failed to fetch categories from RSS reader.")
+            return
+
+        keyboard = []
+        categories_dict = {}  # Store category information
+        for category in categories:
+            cat_title = category.get("title", "Unknown")
+            cat_id = category.get("id")
+            categories_dict[cat_id] = cat_title
+            keyboard.append([InlineKeyboardButton(cat_title, callback_data=f"cat_{cat_id}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        context.user_data["categories"] = categories_dict
+        await update.message.reply_text(
+            f"Select category for channel @{channel_username}:", reply_markup=reply_markup
+        )
         return
 
-    # --- Feed does not exist, proceed with category selection ---
-    try:
-        categories = fetch_categories(miniflux_client)
-    except Exception as error:
-        logging.error(f"Failed to fetch categories: {error}")
-        await update.message.reply_text("Failed to fetch categories from RSS reader.")
+    # Case B: Direct RSS URL
+    elif direct_rss_url:
+        try:
+            if check_feed_exists(miniflux_client, direct_rss_url):
+                await update.message.reply_text(f"This RSS feed is already in your subscriptions.")
+                return
+        except Exception as error:
+            logging.error(f"Failed to check if feed exists: {error}")
+            await update.message.reply_text(f"Failed to check if feed exists: {str(error)}")
+            return
+
+        context.user_data["direct_rss_url"] = direct_rss_url
+        try:
+            categories = fetch_categories(miniflux_client)
+        except Exception as error:
+            logging.error(f"Failed to fetch categories: {error}")
+            await update.message.reply_text("Failed to fetch categories from RSS reader.")
+            return
+
+        keyboard = []
+        categories_dict = {}  # Store category information
+        for category in categories:
+            cat_title = category.get("title", "Unknown")
+            cat_id = category.get("id")
+            categories_dict[cat_id] = cat_title
+            keyboard.append([InlineKeyboardButton(cat_title, callback_data=f"cat_{cat_id}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        context.user_data["categories"] = categories_dict
+        await update.message.reply_text(
+            f"URL is a valid RSS feed. Select category:", reply_markup=reply_markup
+        )
         return
 
-    # Build inline keyboard with categories
-    keyboard = []
-    categories_dict = {}  # Store category information
-    for category in categories:
-        cat_title = category.get("title", "Unknown")
-        cat_id = category.get("id")
-        categories_dict[cat_id] = cat_title  # Store id -> title mapping
-        keyboard.append([InlineKeyboardButton(cat_title, callback_data=f"cat_{cat_id}")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # Case C: HTML page with RSS links
+    elif html_rss_links:
+        keyboard = []
+        for i, link in enumerate(html_rss_links):
+            title = link.get('title', f"RSS Feed {i+1}")
+            keyboard.append([InlineKeyboardButton(title, callback_data=f"rss_link_{i}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        context.user_data["rss_links"] = html_rss_links
+        await update.message.reply_text(
+            f"Found multiple RSS feeds on the webpage. Select one to subscribe:",
+            reply_markup=reply_markup
+        )
+        return
 
-    context.user_data["categories"] = categories_dict  # Save to context
-
-    await update.message.reply_text(
-        f"Select category for channel @{channel_username}:", reply_markup=reply_markup
-    )
+    # Case D: Neither forward, nor known link type
+    else:
+        # Check if the URL check failed silently (URL looked like http but wasn't RSS/HTML)
+        if msg.text and (msg.text.startswith('http://') or msg.text.startswith('https://')) and not channel_username and not direct_rss_url and not html_rss_links:
+            await update.message.reply_text(
+                "The URL does not appear to be a valid RSS feed and no RSS links were found on the webpage."
+            )
+        # Otherwise, show the default help message
+        else:
+            logging.info("Message is not a forward, channel link, RSS feed, or webpage with RSS links.")
+            await update.message.reply_text("Please forward a message from any channel (public or private) or send a link to a message (e.g., https://t.me/channel_name/123 or https://t.me/-1002069358234/1951), or send a direct RSS feed URL.")
+        return
 
 async def button_callback(update: Update, context: CallbackContext):
     """
