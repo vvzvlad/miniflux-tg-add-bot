@@ -1,0 +1,12 @@
+# Core Dependencies
+python-telegram-bot[ext]
+miniflux-python
+requests
+beautifulsoup4
+lxml # Required by beautifulsoup4 for XML/HTML parsing
+
+# Testing Dependencies
+pytest
+pytest-asyncio
+pytest-mock
+pytest-cov

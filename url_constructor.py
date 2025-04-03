@@ -81,32 +81,34 @@ def build_feed_url(
     Returns:
         The constructed feed URL string.
     """
-    # Ensure channel name is properly encoded if it needs to be added to path
-    # This logic assumes channel_name might NOT be in base_url yet,
-    # which aligns with the original create_feed logic using .replace or appending.
-    # Let's refine this: Assume base_url provided IS the final base path for the bridge.
-    # We might need to adjust how base_url is determined before calling this.
-
-    # Let's stick to the query parameter logic primarily.
-    query_params = {}
+    # Assume base_url is the final base path including any channel segment if applicable.
+    query_parts = [] # List to hold key=value strings
 
     if flags:
-        query_params[PARAM_EXCLUDE_FLAGS] = ",".join(flags)
-    # Ensure exclude_text is added even if it's an empty string (but not None)
-    if exclude_text is not None:
-        query_params[PARAM_EXCLUDE_TEXT] = exclude_text
-    if merge_seconds is not None and merge_seconds > 0: # Don't add if 0 or None
-        query_params[PARAM_MERGE_SECONDS] = str(merge_seconds)
+        # Join flags with comma, DO NOT URL-encode this value here.
+        flags_str = ",".join(flags)
+        query_parts.append(f"{PARAM_EXCLUDE_FLAGS}={flags_str}")
+
+    # Add exclude_text only if it's a non-empty string
+    if exclude_text:
+        # URL-encode the value using quote (handles spaces as %20, etc.)
+        encoded_text = urllib.parse.quote(exclude_text)
+        query_parts.append(f"{PARAM_EXCLUDE_TEXT}={encoded_text}")
+
+    if merge_seconds is not None and merge_seconds > 0:
+        # Value is already a string and doesn't need special encoding
+        query_parts.append(f"{PARAM_MERGE_SECONDS}={str(merge_seconds)}")
 
     # Rebuild the URL
-    # Start with the provided base_url
     final_url = base_url
 
-    if query_params:
-        # Encode the parameters correctly
-        query_string = urllib.parse.urlencode(query_params, doseq=True)
+    if query_parts:
+        # Join the already processed key=value parts with '&'
+        query_string = "&".join(query_parts)
+
         # Append query string
-        separator = "?" if "?" not in final_url else "&"
+        parsed_base = urllib.parse.urlparse(final_url)
+        separator = "&" if parsed_base.query else "?"
         final_url += separator + query_string
 
     return final_url 

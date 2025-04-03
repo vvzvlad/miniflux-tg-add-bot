@@ -52,7 +52,7 @@ async def list_channels(update: Update, _context: CallbackContext):
 
     try:
         # Call the function to get structured data
-        channels_by_category = get_channels_by_category(miniflux_client)
+        channels_by_category = get_channels_by_category(miniflux_client, RSS_BRIDGE_URL)
 
         if not channels_by_category:
             await update.message.reply_text("No channels subscribed through RSS Bridge found.")
@@ -191,7 +191,7 @@ async def _handle_awaiting_regex(update: Update, context: CallbackContext):
         logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
 
         # Update the feed URL using the existing API function
-        success, _updated_url_from_miniflux, error_message = update_feed_url_api(feed_id, new_url, miniflux_client)
+        success, _updated_url_from_miniflux, error_message = await update_feed_url_api(feed_id, new_url, miniflux_client)
 
         if success:
             if remove_regex or not regex_to_store:
@@ -317,7 +317,7 @@ async def _handle_awaiting_merge_time(update: Update, context: CallbackContext):
         logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
 
         # Update the feed URL
-        success, _updated_url_from_miniflux, error_message = update_feed_url_api(feed_id, new_url, miniflux_client)
+        success, _updated_url_from_miniflux, error_message = await update_feed_url_api(feed_id, new_url, miniflux_client)
 
         if success:
             if new_merge_seconds_to_set is None:
@@ -608,6 +608,111 @@ async def handle_message(update: Update, context: CallbackContext):
         # We call _handle_unknown_message which includes logic for URLs that weren't valid RSS/HTML.
         await _handle_unknown_message(update, context)
 
+async def _handle_flag_toggle(query, context: CallbackContext, action: str, flag: str, channel_name: str):
+    """Handles the logic for adding or removing a flag based on button press."""
+    feed_id = context.user_data.get(f'feed_id_for_{channel_name}')
+    if not feed_id:
+        logging.error(f"Missing feed_id in context for flag operation on channel {channel_name}")
+        await query.edit_message_text("Error: Session data lost. Please try selecting the channel again.")
+        return
+
+    logging.info(f"Processing flag toggle: Action='{action}', Flag='{flag}', Channel='{channel_name}', FeedID={feed_id}")
+    current_flags_on_error = []
+    current_merge_seconds_on_error = None
+
+    try:
+        # Fetch current feed data to get the URL
+        current_feed_data = miniflux_client.get_feed(feed_id=feed_id)
+        current_url = current_feed_data.get("feed_url", "")
+        if not current_url:
+            logging.error(f"Could not retrieve current URL for feed {feed_id} ({channel_name}). Cannot toggle flag.")
+            await query.edit_message_text(f"Error: Could not get current feed details for @{channel_name}.")
+            return
+
+        # Parse the current URL
+        parsed_data = parse_feed_url(current_url)
+        current_flags = parsed_data.get("flags") or []
+        current_merge_seconds = parsed_data.get("merge_seconds") # Store for keyboard regen
+        current_flags_on_error = current_flags[:] # Store for error return
+        current_merge_seconds_on_error = current_merge_seconds # Store for error return
+        base_url_for_build = parsed_data.get("base_url")
+
+        if not base_url_for_build:
+            logging.error(f"Could not extract base URL from {current_url} for @{channel_name}")
+            await query.edit_message_text("Internal error: could not determine base URL.")
+            return
+
+        # Calculate new flags
+        new_flags = current_flags[:]
+        success_message_part = ""
+        if action == "add":
+            if flag in new_flags:
+                await query.edit_message_text(f"Flag '{flag}' is already set for channel @{channel_name}.")
+                # Re-show keyboard with current state
+                keyboard = create_flag_keyboard(channel_name, current_flags, current_merge_seconds)
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(f"Flag '{flag}' is already set for channel @{channel_name}. Choose an action:", reply_markup=reply_markup)
+                return
+            new_flags.append(flag)
+            success_message_part = f"Flag {flag} added"
+        elif action == "remove":
+            if flag not in new_flags:
+                await query.edit_message_text(f"Flag '{flag}' is not set for channel @{channel_name}.")
+                # Re-show keyboard with current state
+                keyboard = create_flag_keyboard(channel_name, current_flags, current_merge_seconds)
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(f"Flag '{flag}' is not set for channel @{channel_name}. Choose an action:", reply_markup=reply_markup)
+                return
+            new_flags = [f for f in new_flags if f != flag]
+            success_message_part = f"Flag {flag} removed"
+        else:
+            logging.error(f"Unknown flag action '{action}' requested.")
+            await query.edit_message_text("Internal error: Unknown flag action.")
+            return
+
+        # Build new URL
+        new_url = build_feed_url(
+            base_url=base_url_for_build,
+            channel_name=channel_name,
+            flags=new_flags if new_flags else None,
+            exclude_text=parsed_data.get("exclude_text"),
+            merge_seconds=parsed_data.get("merge_seconds")
+        )
+
+        logging.info(f"Attempting flag update. Old flags: {current_flags}, New flags: {new_flags}. Target URL: {new_url}")
+
+        # Update feed URL via API
+        success, updated_url_from_api, error_message = await update_feed_url_api(feed_id, new_url, miniflux_client)
+
+        if not success:
+            # Восстанавливаем отправку клавиатуры при ошибке
+            await query.edit_message_text(f"Failed to update feed URL via Miniflux API for @{channel_name}. Error: {error_message}")
+            keyboard = create_flag_keyboard(channel_name, current_flags_on_error, current_merge_seconds_on_error)
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(f"Failed to update flags for @{channel_name}. Error: {error_message}. Choose an action:", reply_markup=reply_markup)
+            return
+
+        # Success
+        final_flags = new_flags
+        final_merge_seconds = parsed_data.get("merge_seconds")
+        flags_display = " ".join(final_flags) if final_flags else "none"
+        message = f"{success_message_part} for channel @{channel_name}.\nCurrent flags: {flags_display}"
+
+        # Восстанавливаем отправку клавиатуры при успехе
+        keyboard = create_flag_keyboard(channel_name, final_flags, final_merge_seconds)
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            f"{message}\n\nChoose an action:",
+            reply_markup=reply_markup
+        )
+
+    except Exception as e:
+        logging.error(f"Failed during _handle_flag_toggle for {channel_name}: {e}", exc_info=True)
+        # Восстанавливаем отправку клавиатуры при общем исключении
+        keyboard = create_flag_keyboard(channel_name, current_flags_on_error, current_merge_seconds_on_error)
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"Failed to process flag action: {str(e)}. Choose an action:", reply_markup=reply_markup)
+
 async def button_callback(update: Update, context: CallbackContext):
     """
     Handle callback query when user selects a category or flag action.
@@ -767,54 +872,18 @@ async def button_callback(update: Update, context: CallbackContext):
             logging.error(f"Unexpected error while subscribing to feed '{feed_url}': {str(error)}", exc_info=True)
             await query.edit_message_text(f"Unexpected error while subscribing to RSS feed: {str(error)}")
 
-    
-    elif data.startswith("add_flag|"):
-        # Handle add flag button
-        parts = data.split("|")
-        if len(parts) < 3:
-            await query.edit_message_text("Invalid flag data.")
-            return
-
-        channel_name = parts[1]
-        flag_name = parts[2]
-
-        # Call the shared function for adding flags (which now uses url_constructor)
-        # It now returns merge time as well
-        success, message, updated_flags, updated_merge_seconds = await add_flag_to_channel(channel_name, flag_name)
-
-        # Create keyboard with updated flag statuses and merge time
-        keyboard = create_flag_keyboard(channel_name, updated_flags, updated_merge_seconds)
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await query.edit_message_text(
-            f"{message}\n\nChoose an action:",
-            reply_markup=reply_markup
-        )
-        # No need for the 'else' block here anymore, add_flag_to_channel returns current flags on failure too
-
-    elif data.startswith("remove_flag|"):
-        # Handle remove flag button
-        parts = data.split("|")
-        if len(parts) < 3:
-            await query.edit_message_text("Invalid flag data.")
-            return
-
-        channel_name = parts[1]
-        flag_name = parts[2]
-
-        # Call the shared function for removing flags (which now uses url_constructor)
-        # It now returns merge time as well
-        success, message, updated_flags, updated_merge_seconds = await remove_flag_from_channel(channel_name, flag_name)
-
-        # Create keyboard with updated flag statuses and merge time
-        keyboard = create_flag_keyboard(channel_name, updated_flags, updated_merge_seconds)
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await query.edit_message_text(
-            f"{message}\n\nChoose an action:",
-            reply_markup=reply_markup
-        )
-        # No need for the 'else' block here anymore, remove_flag_from_channel returns current flags on failure too
+    # Refactored flag handling
+    elif data.startswith("flag_"):
+        try:
+            _, action, flag, channel_name = data.split("_", 3) # flag includes #
+            # Pass control to the dedicated handler
+            await _handle_flag_toggle(query, context, action, flag, channel_name)
+        except ValueError as e:
+            logging.error(f"Could not parse flag callback data: {data}. Error: {e}")
+            await query.edit_message_text("Invalid callback data format for flag action.")
+        except Exception as e:
+            logging.error(f"Unexpected error processing flag callback '{data}': {e}", exc_info=True)
+            await query.edit_message_text("An unexpected error occurred processing the flag action.")
 
     elif data.startswith("delete|"):
         # Handle delete channel button
@@ -849,7 +918,6 @@ async def button_callback(update: Update, context: CallbackContext):
         except Exception as e:
             logging.error(f"Failed to delete feed for {channel_name}: {e}", exc_info=True)
             await query.edit_message_text(f"Failed to delete channel: {str(e)}")
-
 
     elif data.startswith("edit_regex|"):
         # Handle edit regex button
@@ -928,7 +996,6 @@ async def button_callback(update: Update, context: CallbackContext):
             # Removed parse_mode argument
             await query.edit_message_text(prompt_message)
 
-
         except Exception as e:
             # ... (Error handling and state cleanup remains the same) ...
             logging.error(f"Failed during edit_regex preparation for {channel_name}: {e}", exc_info=True)
@@ -937,7 +1004,6 @@ async def button_callback(update: Update, context: CallbackContext):
             if 'editing_feed_id' in context.user_data: del context.user_data['editing_feed_id']
             error_msg = str(e)
             await query.edit_message_text(f"Failed to start regex edit: {error_msg}")
-
 
     elif data.startswith("edit_merge_time|"):
         # Handle edit merge time button
@@ -1016,215 +1082,9 @@ async def button_callback(update: Update, context: CallbackContext):
             error_msg = str(e)
             await query.edit_message_text(f"Failed to start merge time edit: {error_msg}")
 
-
-async def add_flag_to_channel(channel_name, flag_to_add):
-    """
-    Add a flag to a channel subscription using url_constructor.
-    
-    Args:
-        channel_name: Channel username or ID
-        flag_to_add: Flag to add
-        
-    Returns:
-        tuple: (success, message, updated_flags list, updated_merge_seconds int | None)
-    """
-    current_flags_on_error = []
-    current_merge_seconds_on_error = None
-    try:
-        # Find the feed
-        feeds = miniflux_client.get_feeds()
-        target_feed = None
-        feed_id = None
-        current_url = ""
-
-        for feed in feeds:
-            feed_url_check = feed.get("feed_url", "")
-            parsed_check = parse_feed_url(feed_url_check)
-            channel = parsed_check.get("channel_name")
-
-            if channel and channel.lower() == channel_name.lower():
-                target_feed = feed # Keep feed data if needed, e.g., title
-                feed_id = feed.get("id")
-                current_url = feed_url_check # Store the found URL
-                # Store potentially needed values for error return
-                current_flags_on_error = parsed_check.get("flags") or []
-                current_merge_seconds_on_error = parsed_check.get("merge_seconds")
-                break
-        
-        if not target_feed or not feed_id:
-            return False, f"Channel @{channel_name} not found in subscriptions.", [], None
-        
-        # Optionally re-fetch feed for the absolute latest URL, though often unnecessary
-        # try:
-        #     updated_target_feed = miniflux_client.get_feed(feed_id)
-        #     current_url = updated_target_feed.get("feed_url", "")
-        # except Exception as fetch_err:
-        #      logging.warning(f"Could not re-fetch feed {feed_id} before adding flag, proceeding with stored URL. Error: {fetch_err}")
-        #      # Proceed with current_url found during the loop if fetch fails
-
-        if not current_url: # Should not happen if target_feed was found, but safety check
-            return False, f"Could not determine current URL for @{channel_name}.", current_flags_on_error, current_merge_seconds_on_error
-
-        # Parse the current URL
-        parsed_data = parse_feed_url(current_url)
-        current_flags = parsed_data.get("flags") or []
-        current_merge_seconds = parsed_data.get("merge_seconds") # Get current merge time for error case
-        base_url_for_build = parsed_data.get("base_url")
-        
-        if not base_url_for_build:
-            logging.error(f"Could not extract base URL from {current_url} for @{channel_name}")
-            return False, "Internal error: could not determine base URL.", current_flags, current_merge_seconds
-
-        # Check if flag already exists
-        if flag_to_add in current_flags:
-            return False, f"Flag '{flag_to_add}' is already set for channel @{channel_name}.", current_flags, current_merge_seconds
-        
-        # Add new flag
-        new_flags = current_flags + [flag_to_add]
-        
-        # Build new URL
-        new_url = build_feed_url(
-            base_url=base_url_for_build,
-            channel_name=channel_name,
-            flags=new_flags,
-            exclude_text=parsed_data.get("exclude_text"),
-            merge_seconds=parsed_data.get("merge_seconds") # Keep existing merge time
-        )
-        
-        logging.info(f"Original feed URL: {current_url}")
-        logging.info(f"Attempting to update URL to: {new_url}")
-
-        # Update feed URL via API
-        success, _updated_url_from_miniflux, error_message = update_feed_url_api(feed_id, new_url, miniflux_client)
-        
-        if not success:
-            # Use new_url in the message as that's what we tried to set
-            return False, f"Failed to update feed URL via Miniflux API for @{channel_name}. Error: {error_message}. Target URL was: {new_url}", current_flags, current_merge_seconds
-        
-        # Parse the *actual* updated URL returned by miniflux or re-fetch
-        # Re-fetching is safer to guarantee we have the canonical state
-        final_flags = new_flags # Default in case re-fetch fails
-        final_merge_seconds = parsed_data.get("merge_seconds") # Default in case re-fetch fails
-        try:
-            final_feed_data = miniflux_client.get_feed(feed_id)
-            final_url = final_feed_data.get("feed_url", "")
-            final_parsed_data = parse_feed_url(final_url)
-            final_flags = final_parsed_data.get("flags") or []
-            final_merge_seconds = final_parsed_data.get("merge_seconds") # Get final merge time
-            logging.info(f"URL after update confirmation for @{channel_name}: {final_url}")
-        except Exception as e_final:
-            logging.error(f"Failed to fetch final feed state for @{channel_name} after adding flag: {e_final}. Using flags/merge_time from successful update attempt.")
-            # Fallback: Assume the new_flags we intended are now set, keep existing merge time
-
-
-        flags_display = " ".join(final_flags) if final_flags else "none"
-        return True, f"Added flag '{flag_to_add}' to channel @{channel_name}.\nCurrent flags: {flags_display}", final_flags, final_merge_seconds
-        
-    except Exception as e:
-        logging.error(f"Failed during add_flag_to_channel for {channel_name}: {e}", exc_info=True)
-        # Attempt to return current flags/merge_time if possible, otherwise defaults
-        # The values were captured at the start of the try block or during loop
-        return False, f"Failed to add flag: {str(e)}", current_flags_on_error, current_merge_seconds_on_error
-
-
-async def remove_flag_from_channel(channel_name, flag_to_remove):
-    """
-    Remove a flag from a channel subscription using url_constructor.
-    
-    Args:
-        channel_name: Channel username or ID
-        flag_to_remove: Flag to remove
-        
-    Returns:
-        tuple: (success, message, updated_flags list, updated_merge_seconds int | None)
-    """
-    current_flags_on_error = []
-    current_merge_seconds_on_error = None
-    try:
-        # Find the feed
-        feeds = miniflux_client.get_feeds()
-        target_feed = None
-        feed_id = None
-        current_url = ""
-
-        for feed in feeds:
-            feed_url_check = feed.get("feed_url", "")
-            parsed_check = parse_feed_url(feed_url_check)
-            channel = parsed_check.get("channel_name")
-
-            if channel and channel.lower() == channel_name.lower():
-                target_feed = feed
-                feed_id = feed.get("id")
-                current_url = feed_url_check
-                # Store potentially needed values for error return
-                current_flags_on_error = parsed_check.get("flags") or []
-                current_merge_seconds_on_error = parsed_check.get("merge_seconds")
-                break
-        
-        if not target_feed or not feed_id:
-            return False, f"Channel @{channel_name} not found in subscriptions.", [], None
-
-        # Optional: Re-fetch for latest URL
-        # ... (similar logic as in add_flag_to_channel if needed) ...
-        if not current_url: return False, f"Could not determine current URL for @{channel_name}.", current_flags_on_error, current_merge_seconds_on_error
-
-        # Parse the current URL
-        parsed_data = parse_feed_url(current_url)
-        current_flags = parsed_data.get("flags") or []
-        current_merge_seconds = parsed_data.get("merge_seconds") # Get current merge time
-        base_url_for_build = parsed_data.get("base_url")
-
-        if not base_url_for_build:
-            logging.error(f"Could not extract base URL from {current_url} for @{channel_name}")
-            return False, "Internal error: could not determine base URL.", current_flags, current_merge_seconds
-
-        # Check if flag exists
-        if flag_to_remove not in current_flags:
-            return False, f"Flag '{flag_to_remove}' is not set for channel @{channel_name}.", current_flags, current_merge_seconds
-        
-        # Remove flag
-        new_flags = [flag for flag in current_flags if flag != flag_to_remove]
-        # If new_flags is empty, build_feed_url should handle omitting the parameter
-        
-        # Build new URL
-        new_url = build_feed_url(
-            base_url=base_url_for_build,
-            channel_name=channel_name,
-            flags=new_flags if new_flags else None, # Pass None if empty
-            exclude_text=parsed_data.get("exclude_text"),
-            merge_seconds=parsed_data.get("merge_seconds") # Keep existing merge time
-        )
-        
-        logging.info(f"Original feed URL: {current_url}")
-        logging.info(f"Attempting to update URL to: {new_url}")
-
-        # Update feed URL via API
-        success, _updated_url_from_miniflux, error_message = update_feed_url_api(feed_id, new_url, miniflux_client)
-        
-        if not success:
-            return False, f"Failed to update feed URL via Miniflux API for @{channel_name}. Error: {error_message}. Target URL was: {new_url}", current_flags, current_merge_seconds
-        
-        # Parse the *actual* updated URL or re-fetch
-        final_flags = new_flags # Default
-        final_merge_seconds = parsed_data.get("merge_seconds") # Default
-        try:
-            final_feed_data = miniflux_client.get_feed(feed_id)
-            final_url = final_feed_data.get("feed_url", "")
-            final_parsed_data = parse_feed_url(final_url)
-            final_flags = final_parsed_data.get("flags") or []
-            final_merge_seconds = final_parsed_data.get("merge_seconds") # Get final merge time
-            logging.info(f"URL after update confirmation for @{channel_name}: {final_url}")
-        except Exception as e_final:
-            logging.error(f"Failed to fetch final feed state for @{channel_name} after removing flag: {e_final}. Using flags/merge_time from successful update attempt.")
-            # Fallback: Assume the new_flags we intended are now set, keep existing merge time
-
-        flags_display = " ".join(final_flags) if final_flags else "none"
-        return True, f"Removed flag '{flag_to_remove}' from channel @{channel_name}.\nCurrent flags: {flags_display}", final_flags, final_merge_seconds
-        
-    except Exception as e:
-        logging.error(f"Failed during remove_flag_from_channel for {channel_name}: {e}", exc_info=True)
-        # Attempt to return current flags/merge_time if possible
-        return False, f"Failed to remove flag: {str(e)}", current_flags_on_error, current_merge_seconds_on_error
+    else:
+        logging.warning(f"Received unknown callback query data: {data}")
+        await query.edit_message_text("Unknown action.")
 
 def create_flag_keyboard(channel_username, current_flags, current_merge_seconds=None):
     """
@@ -1275,64 +1135,6 @@ def create_flag_keyboard(channel_username, current_flags, current_merge_seconds=
 
     return keyboard
 
-# Restore add_flag command handler (uses the refactored add_flag_to_channel)
-async def add_flag(update: Update, context: CallbackContext):
-    """
-    Handle the /add_flag command.
-    Adds a new flag to an existing channel subscription.
-    Format: /add_flag channel_name flag
-    """
-    user = update.message.from_user
-    # Use the imported function for admin check
-    if not user or not is_admin(user.username):
-        logging.warning(f"Unauthorized access attempt for /add_flag from user: {user.username if user else 'Unknown'}")
-        await update.message.reply_text("Access denied. Only admin can use this bot.")
-        return
-    
-    # Check if command has correct arguments
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text("Usage: /add_flag channel flag")
-        return
-    
-    channel_name = context.args[0].lstrip('@')
-    flag_to_add = context.args[1].strip()
-    
-    await update.message.chat.send_action("typing")
-    
-    # Call the shared function for adding flags
-    # Note: add_flag_to_channel is already defined earlier in the file
-    _success, message, _ = await add_flag_to_channel(channel_name, flag_to_add)
-    await update.message.reply_text(message)
-
-# Restore remove_flag command handler (uses the refactored remove_flag_from_channel)
-async def remove_flag(update: Update, context: CallbackContext):
-    """
-    Handle the /remove_flag command.
-    Removes a flag from an existing channel subscription.
-    Format: /remove_flag channel flag
-    """
-    user = update.message.from_user
-    # Use the imported function for admin check
-    if not user or not is_admin(user.username):
-        logging.warning(f"Unauthorized access attempt for /remove_flag from user: {user.username if user else 'Unknown'}")
-        await update.message.reply_text("Access denied. Only admin can use this bot.")
-        return
-    
-    # Check if command has correct arguments
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text("Usage: /remove_flag channel flag")
-        return
-    
-    channel_name = context.args[0].lstrip('@')
-    flag_to_remove = context.args[1].strip()
-    
-    await update.message.chat.send_action("typing")
-    
-    # Call the shared function for removing flags
-    # Note: remove_flag_from_channel is already defined earlier in the file
-    _success, message, _ = await remove_flag_from_channel(channel_name, flag_to_remove)
-    await update.message.reply_text(message)
-
 def main():
     """
     Initialize the Telegram bot and register handlers.
@@ -1349,8 +1151,8 @@ def main():
             commands = [
                 ("start", "Start working with the bot"),
                 ("list", "Show list of subscribed channels"),
-                ("add_flag", "Add flag to channel: /add_flag channel flag"),
-                ("remove_flag", "Remove flag from channel: /remove_flag channel flag")
+                # application.add_handler(CommandHandler("add_flag", add_flag)) # Comment out
+                # application.add_handler(CommandHandler("remove_flag", remove_flag)) # Comment out
             ]
             # Remove print statement
             # Restore the set_my_commands call
@@ -1371,8 +1173,8 @@ def main():
     # Register command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("list", list_channels))
-    application.add_handler(CommandHandler("add_flag", add_flag))
-    application.add_handler(CommandHandler("remove_flag", remove_flag))
+    # application.add_handler(CommandHandler("add_flag", add_flag)) # Comment out
+    # application.add_handler(CommandHandler("remove_flag", remove_flag)) # Comment out
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
     
