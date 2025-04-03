@@ -1,61 +1,70 @@
-### Test Plan for Full Coverage
+## Updated Test Plan
 
-1. `bot.py` (Current Coverage: ~64%)
-   ✅ Handling Existing Channels (show options keyboard) - DONE
-   ✅ Handling RSS Link Selection (`button_callback` with `rss_link_`) - DONE
-   ✅ Editing Merge Time (`edit_merge_time|`, `awaiting_merge_time` state) - DONE
-   ✅ Category Selection Handling - DONE
-   ✅ Media Group Handling - DONE
-   - Miniflux API Error Handling (in various handlers):
-       ✅ `list_channels`: `get_channels_by_category` raises exception - DONE
-       ✅ `handle_message` (new channel): `fetch_categories` raises exception - DONE
-       ✅ `handle_message` (existing channel): `get_feeds`/`get_feed` raises exception - DONE
-       ✅ `button_callback` (delete): `get_feeds`/`delete_feed` raises exception - DONE
-       - `button_callback` (flags): `get_feed`/`update_feed_url_api` raises exception/returns `False`.
-       - `button_callback` (edit regex/merge init): `get_feeds`/`get_feed` raises exception.
-       - `_handle_awaiting_regex`/`_handle_awaiting_merge_time`: `get_feed`/`update_feed_url_api` raises exception/returns `False`.
-   - Invalid Callback Data:
-       ✅ Test `button_callback` with unknown/malformed data (e.g., `cat_abc`, `flag_add_`, `delete|`). Verify "Unknown action" message - DONE
-   - `main()` and `post_init()`:
-       - Test `main()` runs: check `ApplicationBuilder`, `post_init`, `run_polling` calls.
-       - Test `post_init` exception during `set_my_commands`: check logging, bot continues/exits as expected.
-       - Test `main()` initialization failure (`TELEGRAM_TOKEN is None`): check critical log, `sys.exit(1)` call.
-   - **API Error Handling**
-     - ✅ Error handling in `/list` command
-     - ✅ Handling get_feeds errors in Telegram channel handler
-     - ✅ Handling fetch_categories errors in Telegram channel handler
-     - ✅ Error handling in delete feed functionality
-     - ✅ Successful deletion of feeds
-     - ✅ Unknown callback data
-   - **Application Initialization**
-     - ✅ Test `main()` initialization success: Application is built with correct handlers and polling starts.
-     - ✅ Test `main()` initialization failure (miniflux_client is None or TELEGRAM_TOKEN is None): Exits with sys.exit(1).
-     - Test `post_init` success: Correctly sets up bot commands.
-     - Test `post_init` exception during `set_my_commands`: check logging, bot continues/exits as expected.
+This plan covers functionality that was previously untested or requires more thorough verification.
 
-2. `config.py` (Current Coverage: ~85%)
-   - ✅ Test environment variable loading (correct values).
-   - ✅ Test missing environment variables (defaults used or errors raised).
-   - ✅ Test invalid environment variables (`MINIFLUX_API_KEY` empty).
-   - ✅ Test `ADMIN_USERNAME` parsing (username validation).
+### 1. `bot.py` (Current Coverage: ~61% - Requires Significant Improvement)
 
-3. `miniflux_api.py` (Current Coverage: ~86%)
-   - Test API errors in `fetch_categories`, `check_feed_exists`, `update_feed_url` (ClientError, ServerError, other exceptions).
-   - Test `get_channels_by_category` with API error on `get_feeds`.
-   - Test `get_channels_by_category` with `rss_bridge_url=None` or invalid URL (check warning log).
+The main bot module, requiring the most attention.
 
-4. `url_utils.py` (Current Coverage: ~89%)
-   - ✅ `parse_telegram_link`:
-       - Test various link formats (`t.me/channel`, `t.me/c/12345`, `t.me/c/12345/67`, `https://`, `http://`, @channel).
-       - Test private channel links (`-100...`).
-       - Test invalid/non-Telegram/user links (return `None`).
-   - ✅ `is_valid_rss_url`:
-       - Test valid RSS XML URL.
-       - Test HTML URL with RSS link tags.
-       - Test HTML URL without RSS link tags.
-       - Test URL with non-XML/non-HTML content.
-       - Test network errors (timeout, connection error).
-       - Test invalid URL format.
-   - ✅ `extract_channel_from_feed_url`:
-       - Test different RSS-Bridge URL structures.
-       - Test URLs not matching the expected pattern. 
+**1.1. State and User Input Handling:**
+    *   **Invalid Input in States:**
+        *   Enter `awaiting_regex` state, provide invalid regex. Verify error message and re-entry mechanism.
+        *   Enter `awaiting_merge_time` state, provide invalid time (non-numeric, negative, too large). Verify error message and re-entry mechanism.
+    *   **Operation Cancellation:**
+        *   Send `/cancel` or another command while in `awaiting_regex` or `awaiting_merge_time`. Verify correct state reset and user data cleanup.
+    *   **Unexpected Input:**
+        *   Send plain text, stickers, or other non-command messages when the bot is in the base state. Ensure the bot ignores them or sends a help message.
+    *   **Message Editing:**
+        *   Test the bot's reaction to a user editing a message that initially triggered a command or state transition.
+    *   **Button Callbacks:**
+        *   Test clicking a category selection button (`cat_`) when `MINIFLUX_CLIENT` is unavailable or returns an error on `check_feed_exists`.
+        *   Test clicking an RSS feed selection button (`rss_link_`) when `MINIFLUX_CLIENT` is unavailable or returns an error on `check_feed_exists` or `add_feed`.
+        *   Test clicking the delete button (`delete|feed_id`) when `get_feeds` or `delete_feed` return an error. Ensure the correct error message is shown to the user.
+
+**1.2. Miniflux API Error Handling (Specific Scenarios):**
+    *   **`_handle_awaiting_regex`:**
+        *   Simulate `MinifluxApiError` during `get_feed` call. Verify user message and state handling.
+        *   Simulate `False` return or `MinifluxApiError` during `update_feed_url_api` call. Verify user message and state handling.
+    *   **`_handle_awaiting_merge_time`:**
+        *   Simulate `MinifluxApiError` during `get_feed` call. Verify user message and state handling.
+        *   Simulate `False` return or `MinifluxApiError` during `update_feed_url_api` call. Verify user message and state handling.
+    *   **Error Handling in Main Handlers:**
+        *   Simulate API error during `fetch_categories` call in `/start` handler (for new channel).
+        *   Simulate API error during `get_feeds` call in message handler (for existing channel).
+        *   Simulate API error during `get_channels_by_category` call in `/list` handler.
+
+**1.3. Initialization and Startup:**
+    *   Ensure `main()` correctly exits with `sys.exit(1)` if `MINIFLUX_CLIENT` is `None` during initialization.
+    *   Ensure `main()` correctly exits with `sys.exit(1)` if `TELEGRAM_TOKEN` is `None`.
+    *   Simulate an exception during the `set_my_commands` call in `post_init`. Verify error logging and ensure the bot continues running (or exits gracefully if designed to – check code).
+
+**1.4. Logging:**
+    *   Verify the presence, correct format, and level for key log messages in various scenarios: API errors, invalid input, initialization failures.
+    *   Ensure no sensitive information (PII) is present in logs.
+
+**1.5. Media Groups:**
+    *   Send multiple media group messages in quick succession. Ensure they are handled correctly as a single update or ignored after the first. (Previous plan indicated "DONE", but re-verify edge cases given the coverage).
+
+### 4. `url_utils.py` (Current Coverage: ~89% - Needs Specific Tests)
+
+**4.1. `parse_telegram_link`:**
+    *   Test private channel links: `t.me/c/1234567890`, `https://t.me/c/1234567890`. Verify correct ID extraction (`-1001234567890`).
+    *   Test private channel message links: `t.me/c/1234567890/123`. Verify correct channel ID extraction (`-1001234567890`).
+    *   Test channel mention: `@channelname`. Verify correct name extraction (`channelname`).
+    *   Test user profile links: `https://t.me/username`. Verify `None` return.
+    *   Test invite links: `t.me/+joinchatlink`. Verify `None` return.
+    *   Test non-URL strings: `"plain text"`. Verify `None` return.
+    *   Test URLs from other platforms: `https://example.com`. Verify `None` return.
+
+**4.2. `is_valid_rss_url`:**
+    *   Mock `requests.get` to return non-XML and non-HTML `Content-Type` (e.g., `application/json`). Verify `False` return.
+    *   Mock `requests.get` to raise `requests.exceptions.Timeout`. Verify `False` return and corresponding log entry.
+    *   Mock `requests.get` to raise `requests.exceptions.ConnectionError`. Verify `False` return and corresponding log entry.
+    *   Test with invalid URL strings (e.g., `"htp://invalid format"`). Verify `False` return (likely `requests` will raise an exception which should be handled).
+
+**4.3. `extract_channel_from_feed_url`:**
+    *   Test URLs with variations in the RSS-Bridge path (if applicable, e.g., other query parameters, fragments).
+    *   Test URLs resembling RSS-Bridge but not matching the regex (e.g., missing `&action=display`, different parameter names). Verify `None` return.
+    *   Test with `None` or an empty string as input. Verify `None` return.
+
+---
