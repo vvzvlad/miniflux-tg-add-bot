@@ -1,17 +1,23 @@
 import logging
 import json
 import urllib.parse
+import sys # Import sys for exit
+import re
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, CallbackContext
 from telegram.ext import filters
 from miniflux import ClientError, ServerError
 
+# Import config variables and client, handle potential import error state
 from config import (
     MINIFLUX_BASE_URL, TELEGRAM_TOKEN, RSS_BRIDGE_URL,
     miniflux_client, is_admin,
     should_accept_channels_without_username
 )
+
+# Remove module-level check to allow mocking in tests
+# Now it will be checked in main() instead
 
 from miniflux_api import fetch_categories, check_feed_exists, update_feed_url as update_feed_url_api, get_channels_by_category
 
@@ -127,245 +133,229 @@ async def list_channels(update: Update, _context: CallbackContext):
         logging.error(f"Failed to list channels: {error}", exc_info=True)
         await update.message.reply_text(f"Failed to list channels: {str(error)}")
 
-async def handle_message(update: Update, context: CallbackContext):
-    """
-    Handle incoming messages in private chat.
-    If the message is forwarded from a channel OR contains a link to a channel message,
-    fetch categories and ask user to select one.
-    If the state is 'awaiting_regex', update the regex for the specified channel.
-    If the state is 'awaiting_merge_time', update the merge time for the specified channel.
-    Only processes messages from admin user.
-    """
+async def _handle_awaiting_regex(update: Update, context: CallbackContext):
+    """Handles the logic when the bot is awaiting regex input."""
     msg = update.message
-    if not msg:
+    channel_name = context.user_data.get('editing_regex_for_channel')
+    feed_id = context.user_data.get('editing_feed_id')
+    new_regex_raw = msg.text.strip() if msg.text else ""
+
+    # Clean up state regardless of success/failure below
+    if 'state' in context.user_data: del context.user_data['state']
+    if 'editing_regex_for_channel' in context.user_data: del context.user_data['editing_regex_for_channel']
+    if 'editing_feed_id' in context.user_data: del context.user_data['editing_feed_id']
+    logging.info(f"Processing new regex for channel {channel_name} (feed ID: {feed_id}). State cleared.")
+
+    if not channel_name or not feed_id:
+        logging.error("State 'awaiting_regex' was set, but channel_name or feed_id missing from context.")
+        await update.message.reply_text("Error: Missing context for regex update. Please try editing again.")
         return
 
-    user = msg.from_user
-    if not user or not is_admin(user.username):
-        logging.warning(f"Unauthorized access attempt via message from user: {user.username if user else 'Unknown'}")
-        await update.message.reply_text("Access denied. Only admin can use this bot.")
-        return
+    await update.message.chat.send_action("typing")
 
-    # First check if we're awaiting regex input
-    if context.user_data.get('state') == 'awaiting_regex':
-        channel_name = context.user_data.get('editing_regex_for_channel')
-        feed_id = context.user_data.get('editing_feed_id')
-        new_regex_raw = msg.text.strip() if msg.text else ""
-
-        # Clean up state regardless of success/failure below
-        if 'state' in context.user_data: del context.user_data['state']
-        if 'editing_regex_for_channel' in context.user_data: del context.user_data['editing_regex_for_channel']
-        if 'editing_feed_id' in context.user_data: del context.user_data['editing_feed_id']
-        logging.info(f"Processing new regex for channel {channel_name} (feed ID: {feed_id}). State cleared.")
-
-        if not channel_name or not feed_id:
-            logging.error("State 'awaiting_regex' was set, but channel_name or feed_id missing from context.")
-            await update.message.reply_text("Error: Missing context for regex update. Please try editing again.")
+    try:
+        # Fetch current feed data
+        current_feed_data = miniflux_client.get_feed(feed_id)
+        current_url = current_feed_data.get("feed_url", "")
+        if not current_url:
+            logging.error(f"Could not retrieve current URL for feed {feed_id} ({channel_name}) before updating regex.")
+            await update.message.reply_text("Error: Could not retrieve current feed URL. Cannot update regex.")
             return
 
-        await update.message.chat.send_action("typing")
+        logging.info(f"Current URL for {channel_name} (feed ID: {feed_id}): {current_url}")
 
-        try:
-            # Fetch current feed data
-            current_feed_data = miniflux_client.get_feed(feed_id)
-            current_url = current_feed_data.get("feed_url", "")
-            if not current_url:
-                logging.error(f"Could not retrieve current URL for feed {feed_id} ({channel_name}) before updating regex.")
-                await update.message.reply_text("Error: Could not retrieve current feed URL. Cannot update regex.")
-                return
+        # Parse the current URL using the new function
+        parsed_data = parse_feed_url(current_url)
 
-            logging.info(f"Current URL for {channel_name} (feed ID: {feed_id}): {current_url}")
+        # Determine if removing or updating the regex
+        remove_regex = new_regex_raw.lower() in ['-']
+        regex_to_store = None if remove_regex or not new_regex_raw else new_regex_raw
 
-            # Parse the current URL using the new function
-            parsed_data = parse_feed_url(current_url)
-
-            # Determine if removing or updating the regex
-            remove_regex = new_regex_raw.lower() in ['-']
-            regex_to_store = None if remove_regex or not new_regex_raw else new_regex_raw
-
-            # Build the new URL using the constructor
-            # We need the base URL part which might include the channel name in the path
-            # Get base URL from parsed data
-            base_url_for_build = parsed_data.get("base_url")
-            if not base_url_for_build:
-                logging.error(f"Could not extract base URL from {current_url}")
-                await update.message.reply_text("Internal error: could not determine base URL.")
-                return
-
-            new_url = build_feed_url(
-                base_url=base_url_for_build,
-                channel_name=channel_name, # Pass channel name for context/verification if needed by build_feed_url
-                flags=parsed_data.get("flags"), # Keep existing flags
-                exclude_text=regex_to_store, # Set the new regex value (or None to remove)
-                merge_seconds=parsed_data.get("merge_seconds") # Keep existing merge time
-            )
-
-            logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
-
-            # Update the feed URL using the existing API function
-            success, _updated_url_from_miniflux, error_message = update_feed_url_api(feed_id, new_url, miniflux_client)
-
-            if success:
-                if remove_regex or not regex_to_store:
-                    await update.message.reply_text(f"Regex filter removed for channel @{channel_name}.")
-                else:
-                    await update.message.reply_text(f"Regex for channel @{channel_name} updated to: {regex_to_store}")
-
-                # Show the flag keyboard again
-                try:
-                    # Fetch flags from the *actually updated* URL returned by Miniflux
-                    # (or re-fetch feed if Miniflux doesn't return it reliably)
-                    feed_after_update = miniflux_client.get_feed(feed_id) # Re-fetch to be sure
-                    url_after_update = feed_after_update.get("feed_url", "")
-                    parsed_after_update = parse_feed_url(url_after_update)
-                    current_flags_after_update = parsed_after_update.get("flags") or []
-
-                    keyboard = create_flag_keyboard(channel_name, current_flags_after_update)
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    await update.message.reply_text(f"Updated options for @{channel_name}. Choose an action:", reply_markup=reply_markup)
-                    logging.info(f"Displayed updated options keyboard for {channel_name} after regex update.")
-
-                except Exception as e_flags:
-                    logging.error(f"Failed to fetch flags/show keyboard after regex update for {channel_name}: {e_flags}")
-            else:
-                logging.error(f"Failed to update feed URL for {channel_name} (feed ID: {feed_id}) with new regex. Error: {error_message}. Attempted URL: {new_url}")
-                await update.message.reply_text(f"Failed to update regex for channel @{channel_name}. Miniflux error: {error_message}")
-
-        except Exception as e:
-            logging.error(f"Error processing new regex for {channel_name}: {e}", exc_info=True)
-            await update.message.reply_text(f"An unexpected error occurred while updating the regex: {str(e)}")
-        
-        return
-
-    # Check if we are awaiting merge time input
-    elif context.user_data.get('state') == 'awaiting_merge_time':
-        channel_name = context.user_data.get('editing_merge_time_for_channel')
-        feed_id = context.user_data.get('editing_feed_id')
-        new_merge_time_raw = msg.text.strip() if msg.text else ""
-
-        # Clean up state
-        if 'state' in context.user_data: del context.user_data['state']
-        if 'editing_merge_time_for_channel' in context.user_data: del context.user_data['editing_merge_time_for_channel']
-        if 'editing_feed_id' in context.user_data: del context.user_data['editing_feed_id']
-        logging.info(f"Processing new merge time for channel {channel_name} (feed ID: {feed_id}). State cleared.")
-
-        if not channel_name or not feed_id:
-            logging.error("State 'awaiting_merge_time' was set, but channel_name or feed_id missing from context.")
-            await update.message.reply_text("Error: Missing context for merge time update. Please try editing again.")
+        # Build the new URL using the constructor
+        # We need the base URL part which might include the channel name in the path
+        # Get base URL from parsed data
+        base_url_for_build = parsed_data.get("base_url")
+        if not base_url_for_build:
+            logging.error(f"Could not extract base URL from {current_url}")
+            await update.message.reply_text("Internal error: could not determine base URL.")
             return
 
-        # Process merge time input
-        new_merge_seconds_to_set = None
-        try:
-            if not new_merge_time_raw or int(new_merge_time_raw) == 0:
-                new_merge_seconds_to_set = None # Treat empty or 0 as removal
-                logging.info(f"Received input to remove merge time for {channel_name}.")
+        new_url = build_feed_url(
+            base_url=base_url_for_build,
+            channel_name=channel_name, # Pass channel name for context/verification if needed by build_feed_url
+            flags=parsed_data.get("flags"), # Keep existing flags
+            exclude_text=regex_to_store, # Set the new regex value (or None to remove)
+            merge_seconds=parsed_data.get("merge_seconds") # Keep existing merge time
+        )
+
+        logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
+
+        # Update the feed URL using the existing API function
+        success, _updated_url_from_miniflux, error_message = update_feed_url_api(feed_id, new_url, miniflux_client)
+
+        if success:
+            if remove_regex or not regex_to_store:
+                await update.message.reply_text(f"Regex filter removed for channel @{channel_name}.")
             else:
-                new_merge_seconds_to_set = int(new_merge_time_raw)
-                if new_merge_seconds_to_set < 0:
-                    await update.message.reply_text("Merge time must be a non-negative number (or 0 to disable). Please try again.")
-                    # Re-show keyboard logic... (consider putting this in a helper function)
-                    try:
-                        feed_after_error = miniflux_client.get_feed(feed_id)
-                        parsed_after_error = parse_feed_url(feed_after_error.get("feed_url", ""))
-                        flags_after_error = parsed_after_error.get("flags") or []
-                        keyboard = create_flag_keyboard(channel_name, flags_after_error)
-                        reply_markup = InlineKeyboardMarkup(keyboard)
-                        await update.message.reply_text(f"Options for @{channel_name}. Choose an action:", reply_markup=reply_markup)
-                    except Exception as e_flags_err:
-                        logging.error(f"Failed to show keyboard after invalid merge time input for {channel_name}: {e_flags_err}")
-                    return # Stop processing this input
-                else:
-                    logging.info(f"Received new merge time for {channel_name}: {new_merge_seconds_to_set} seconds.")
-        except ValueError:
-            await update.message.reply_text("Invalid input. Please send a number for merge time (seconds), or 0 to disable.")
-            # Re-show keyboard logic...
+                await update.message.reply_text(f"Regex for channel @{channel_name} updated to: {regex_to_store}")
+
+            # Show the flag keyboard again
             try:
-                feed_after_error = miniflux_client.get_feed(feed_id)
-                parsed_after_error = parse_feed_url(feed_after_error.get("feed_url", ""))
-                flags_after_error = parsed_after_error.get("flags") or []
-                keyboard = create_flag_keyboard(channel_name, flags_after_error)
+                # Fetch flags from the *actually updated* URL returned by Miniflux
+                # (or re-fetch feed if Miniflux doesn't return it reliably)
+                feed_after_update = miniflux_client.get_feed(feed_id) # Re-fetch to be sure
+                url_after_update = feed_after_update.get("feed_url", "")
+                parsed_after_update = parse_feed_url(url_after_update)
+                current_flags_after_update = parsed_after_update.get("flags") or []
+                merge_seconds_after_update = parsed_after_update.get("merge_seconds") # Get merge time
+
+                # Pass merge time to keyboard function
+                keyboard = create_flag_keyboard(channel_name, current_flags_after_update, merge_seconds_after_update)
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text(f"Options for @{channel_name}. Choose an action:", reply_markup=reply_markup)
-            except Exception as e_flags_err:
-                logging.error(f"Failed to show keyboard after invalid merge time input for {channel_name}: {e_flags_err}")
-            return # Stop processing this input
+                await update.message.reply_text(f"Updated options for @{channel_name}. Choose an action:", reply_markup=reply_markup)
+                logging.info(f"Displayed updated options keyboard for {channel_name} after regex update.")
 
-        await update.message.chat.send_action("typing")
+            except Exception as e_flags:
+                logging.error(f"Failed to fetch flags/show keyboard after regex update for {channel_name}: {e_flags}")
+        else:
+            logging.error(f"Failed to update feed URL for {channel_name} (feed ID: {feed_id}) with new regex. Error: {error_message}. Attempted URL: {new_url}")
+            await update.message.reply_text(f"Failed to update regex for channel @{channel_name}. Miniflux error: {error_message}")
 
-        try:
-            # Fetch current feed URL
-            current_feed_data = miniflux_client.get_feed(feed_id)
-            current_url = current_feed_data.get("feed_url", "")
-            if not current_url:
-                logging.error(f"Could not retrieve current URL for feed {feed_id} ({channel_name}) before updating merge time.")
-                await update.message.reply_text("Error: Could not retrieve current feed URL. Cannot update merge time.")
-                return
+    except Exception as e:
+        logging.error(f"Error processing new regex for {channel_name}: {e}", exc_info=True)
+        await update.message.reply_text(f"An unexpected error occurred while updating the regex: {str(e)}")
 
-            logging.info(f"Current URL for {channel_name} (feed ID: {feed_id}): {current_url}")
+async def _handle_awaiting_merge_time(update: Update, context: CallbackContext):
+    """Handles the logic when the bot is awaiting merge time input."""
+    msg = update.message
+    channel_name = context.user_data.get('editing_merge_time_for_channel')
+    feed_id = context.user_data.get('editing_feed_id')
+    new_merge_time_raw = msg.text.strip() if msg.text else ""
 
-            # Parse the current URL
-            parsed_data = parse_feed_url(current_url)
-            base_url_for_build = parsed_data.get("base_url")
-            if not base_url_for_build:
-                logging.error(f"Could not extract base URL from {current_url}")
-                await update.message.reply_text("Internal error: could not determine base URL.")
-                return
+    # Clean up state
+    if 'state' in context.user_data: del context.user_data['state']
+    if 'editing_merge_time_for_channel' in context.user_data: del context.user_data['editing_merge_time_for_channel']
+    if 'editing_feed_id' in context.user_data: del context.user_data['editing_feed_id']
+    logging.info(f"Processing new merge time for channel {channel_name} (feed ID: {feed_id}). State cleared.")
 
-            # Build the new URL using the constructor
-            new_url = build_feed_url(
-                base_url=base_url_for_build,
-                channel_name=channel_name,
-                flags=parsed_data.get("flags"), # Keep existing flags
-                exclude_text=parsed_data.get("exclude_text"), # Keep existing regex
-                merge_seconds=new_merge_seconds_to_set # Set the new merge time (or None)
-            )
+    if not channel_name or not feed_id:
+        logging.error("State 'awaiting_merge_time' was set, but channel_name or feed_id missing from context.")
+        await update.message.reply_text("Error: Missing context for merge time update. Please try editing again.")
+        return
 
-            logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
-
-            # Update the feed URL
-            success, _updated_url_from_miniflux, error_message = update_feed_url_api(feed_id, new_url, miniflux_client)
-
-            if success:
-                if new_merge_seconds_to_set is None:
-                    await update.message.reply_text(f"Merge time filter removed for channel @{channel_name}.")
-                else:
-                    await update.message.reply_text(f"Merge time for channel @{channel_name} updated to: {new_merge_seconds_to_set} seconds.")
-
-                # Show the flag keyboard again
+    # Process merge time input
+    new_merge_seconds_to_set = None
+    try:
+        if not new_merge_time_raw or int(new_merge_time_raw) == 0:
+            new_merge_seconds_to_set = None # Treat empty or 0 as removal
+            logging.info(f"Received input to remove merge time for {channel_name}.")
+        else:
+            new_merge_seconds_to_set = int(new_merge_time_raw)
+            if new_merge_seconds_to_set < 0:
+                await update.message.reply_text("Merge time must be a non-negative number (or 0 to disable). Please try again.")
+                # Re-show keyboard logic... (consider putting this in a helper function)
                 try:
-                    feed_after_update = miniflux_client.get_feed(feed_id)
-                    url_after_update = feed_after_update.get("feed_url", "")
-                    parsed_after_update = parse_feed_url(url_after_update)
-                    current_flags_after_update = parsed_after_update.get("flags") or []
-
-                    keyboard = create_flag_keyboard(channel_name, current_flags_after_update)
+                    feed_after_error = miniflux_client.get_feed(feed_id)
+                    parsed_after_error = parse_feed_url(feed_after_error.get("feed_url", ""))
+                    flags_after_error = parsed_after_error.get("flags") or []
+                    merge_seconds_after_error = parsed_after_error.get("merge_seconds") # Get merge time
+                    # Pass merge time to keyboard function
+                    keyboard = create_flag_keyboard(channel_name, flags_after_error, merge_seconds_after_error)
                     reply_markup = InlineKeyboardMarkup(keyboard)
-                    await update.message.reply_text(f"Updated options for @{channel_name}. Choose an action:", reply_markup=reply_markup)
-                    logging.info(f"Displayed updated options keyboard for {channel_name} after merge time update.")
-                except Exception as e_flags:
-                    logging.error(f"Failed to fetch flags/show keyboard after merge time update for {channel_name}: {e_flags}")
+                    await update.message.reply_text(f"Options for @{channel_name}. Choose an action:", reply_markup=reply_markup)
+                except Exception as e_flags_err:
+                    logging.error(f"Failed to show keyboard after invalid merge time input for {channel_name}: {e_flags_err}")
+                return # Stop processing this input
             else:
-                logging.error(f"Failed to update feed URL for {channel_name} (feed ID: {feed_id}) with new merge time. Error: {error_message}. Attempted URL: {new_url}")
-                await update.message.reply_text(f"Failed to update merge time for channel @{channel_name}. Miniflux error: {error_message}")
+                logging.info(f"Received new merge time for {channel_name}: {new_merge_seconds_to_set} seconds.")
+    except ValueError:
+        await update.message.reply_text("Invalid input. Please send a number for merge time (seconds), or 0 to disable.")
+        # Re-show keyboard logic...
+        try:
+            feed_after_error = miniflux_client.get_feed(feed_id)
+            parsed_after_error = parse_feed_url(feed_after_error.get("feed_url", ""))
+            flags_after_error = parsed_after_error.get("flags") or []
+            merge_seconds_after_error = parsed_after_error.get("merge_seconds") # Get merge time
+            # Pass merge time to keyboard function
+            keyboard = create_flag_keyboard(channel_name, flags_after_error, merge_seconds_after_error)
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(f"Options for @{channel_name}. Choose an action:", reply_markup=reply_markup)
+        except Exception as e_flags_err:
+            logging.error(f"Failed to show keyboard after invalid merge time input for {channel_name}: {e_flags_err}")
+        return # Stop processing this input
 
-        except Exception as e:
-            logging.error(f"Error processing new merge time for {channel_name}: {e}", exc_info=True)
-            await update.message.reply_text(f"An unexpected error occurred while updating the merge time: {str(e)}")
+    await update.message.chat.send_action("typing")
 
-        return
+    try:
+        # Fetch current feed URL
+        current_feed_data = miniflux_client.get_feed(feed_id)
+        current_url = current_feed_data.get("feed_url", "")
+        if not current_url:
+            logging.error(f"Could not retrieve current URL for feed {feed_id} ({channel_name}) before updating merge time.")
+            await update.message.reply_text("Error: Could not retrieve current feed URL. Cannot update merge time.")
+            return
 
-    # Check if this message is part of a media group we've already processed
-    media_group_id = msg.media_group_id
-    if media_group_id and context.user_data.get("processed_media_group_id") == media_group_id:
-        logging.info(f"Skipping duplicate message from media group {media_group_id}")
-        return
+        logging.info(f"Current URL for {channel_name} (feed ID: {feed_id}): {current_url}")
 
+        # Parse the current URL
+        parsed_data = parse_feed_url(current_url)
+        base_url_for_build = parsed_data.get("base_url")
+        if not base_url_for_build:
+            logging.error(f"Could not extract base URL from {current_url}")
+            await update.message.reply_text("Internal error: could not determine base URL.")
+            return
+
+        # Build the new URL using the constructor
+        new_url = build_feed_url(
+            base_url=base_url_for_build,
+            channel_name=channel_name,
+            flags=parsed_data.get("flags"), # Keep existing flags
+            exclude_text=parsed_data.get("exclude_text"), # Keep existing regex
+            merge_seconds=new_merge_seconds_to_set # Set the new merge time (or None)
+        )
+
+        logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
+
+        # Update the feed URL
+        success, _updated_url_from_miniflux, error_message = update_feed_url_api(feed_id, new_url, miniflux_client)
+
+        if success:
+            if new_merge_seconds_to_set is None:
+                await update.message.reply_text(f"Merge time filter removed for channel @{channel_name}.")
+            else:
+                await update.message.reply_text(f"Merge time for channel @{channel_name} updated to: {new_merge_seconds_to_set} seconds.")
+
+            # Show the flag keyboard again
+            try:
+                feed_after_update = miniflux_client.get_feed(feed_id)
+                url_after_update = feed_after_update.get("feed_url", "")
+                parsed_after_update = parse_feed_url(url_after_update)
+                current_flags_after_update = parsed_after_update.get("flags") or []
+                merge_seconds_after_update = parsed_after_update.get("merge_seconds") # Get merge time
+
+                # Pass merge time to keyboard function
+                keyboard = create_flag_keyboard(channel_name, current_flags_after_update, merge_seconds_after_update)
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_text(f"Updated options for @{channel_name}. Choose an action:", reply_markup=reply_markup)
+                logging.info(f"Displayed updated options keyboard for {channel_name} after merge time update.")
+            except Exception as e_flags:
+                logging.error(f"Failed to fetch flags/show keyboard after merge time update for {channel_name}: {e_flags}")
+        else:
+            logging.error(f"Failed to update feed URL for {channel_name} (feed ID: {feed_id}) with new merge time. Error: {error_message}. Attempted URL: {new_url}")
+            await update.message.reply_text(f"Failed to update merge time for channel @{channel_name}. Miniflux error: {error_message}")
+
+    except Exception as e:
+        logging.error(f"Error processing new merge time for {channel_name}: {e}", exc_info=True)
+        await update.message.reply_text(f"An unexpected error occurred while updating the merge time: {str(e)}")
+
+async def _parse_message_content(update: Update, context: CallbackContext):
+    """Parses the message to identify channel links, forwards, RSS feeds, or HTML with RSS."""
+    msg = update.message
     msg_dict = msg.to_dict()
-    logging.info(f"Message details:\n{json.dumps(msg_dict, indent=4)}") # Escaped newline
+    #logging.info(f"Message details:\n{json.dumps(msg_dict, indent=4)}") # Escaped newline
 
     channel_username = None
-    channel_source_type = None # 'forward' or 'link'
+    channel_source_type = None # 'forward' or 'link' or 'link_or_username'
     direct_rss_url = None
     html_rss_links = None
 
@@ -375,7 +365,7 @@ async def handle_message(update: Update, context: CallbackContext):
         if forward_chat["type"] != "channel":
             logging.info(f"Forwarded message is from {forward_chat['type']}, not from channel")
             await update.message.reply_text("Please forward a message from a channel, not from other source.")
-            return
+            return None, None, None, None # Indicate error or invalid input
 
         logging.info(f"Processing forwarded message from channel: {forward_chat.get('username') or forward_chat.get('id')}")
         # Use the imported function for channel acceptance check
@@ -383,26 +373,38 @@ async def handle_message(update: Update, context: CallbackContext):
         if not forward_chat.get("username") and not accept_no_username:
             logging.error(f"Channel {forward_chat['title']} has no username and ACCEPT_CHANNELS_WITHOUT_USERNAME is false.")
             await update.message.reply_text("Error: channel must have a public username to subscribe. \nUse env ACCEPT_CHANNELS_WITHOUT_USERNAME=true to accept channels without username (needs support from RSS bridge).")
-            return
+            return None, None, None, None # Indicate error
 
         channel_username = forward_chat.get("username") or str(forward_chat.get("id"))
         channel_source_type = 'forward'
         # If this is part of a media group from a forward, mark it as processed
+        media_group_id = msg.media_group_id
         if media_group_id:
             context.user_data["processed_media_group_id"] = media_group_id
             logging.info(f"Processing first forwarded message from media group {media_group_id}")
 
-    # 2. If not a forward, check for link in message text
+    # 2. If not a forward, check for link or username in message text
     elif msg.text:
         text = msg.text.strip()
-        
-        # First, try parsing as a Telegram link
-        parsed_channel = parse_telegram_link(text)
+
+        # First, try parsing as a Telegram link or username
+        parsed_channel = None
+        if text.startswith('@'):
+            # Handle direct username mention (e.g., @channelname)
+            match_username = re.match(r"@([a-zA-Z0-9_]+)", text)
+            if match_username:
+                parsed_channel = match_username.group(1)
+                logging.info(f"Processing direct username: {parsed_channel}")
+        else:
+            # Try parsing as a t.me link
+            parsed_channel = parse_telegram_link(text)
+
         if parsed_channel:
-            logging.info(f"Processing link to message from channel: {parsed_channel}")
+            logging.info(f"Processing Telegram channel identified as: {parsed_channel}")
             channel_username = parsed_channel
-            channel_source_type = 'link'
+            channel_source_type = 'link_or_username' # Changed source type for clarity
             # If this is part of a media group from a link, mark it as processed
+            media_group_id = msg.media_group_id
             if media_group_id:
                 context.user_data["processed_media_group_id"] = media_group_id
                 logging.info(f"Processing first linked message from media group {media_group_id}")
@@ -422,139 +424,189 @@ async def handle_message(update: Update, context: CallbackContext):
                 logging.info(f"Found {len(html_rss_links)} RSS links in the webpage")
             # else: URL is neither direct RSS nor HTML with RSS links
 
-    # 3. Process based on what was found
+    return channel_username, channel_source_type, direct_rss_url, html_rss_links
 
-    # Case A: Telegram channel (forward or link)
-    if channel_username:
-        context.user_data["channel_title"] = channel_username
-        logging.info(f"Processing Telegram channel identified as: {channel_username} (Source: {channel_source_type})")
-        await update.message.chat.send_action("typing")
-        try:
-            feeds = miniflux_client.get_feeds()
-            target_feed = None
-            feed_url_check = "" # Store URL if found
-            for feed in feeds:
-                feed_url_check = feed.get("feed_url", "")
-                parsed_check = parse_feed_url(feed_url_check)
-                existing_channel_name = parsed_check.get("channel_name")
-                if existing_channel_name and channel_username.lower() == existing_channel_name.lower():
-                    target_feed = feed
-                    logging.info(f"Found existing feed for channel '{channel_username}': ID={feed.get('id')}, URL={feed_url_check}")
-                    break
+async def _handle_telegram_channel(update: Update, context: CallbackContext, channel_username: str, channel_source_type: str):
+    """Handles logic for processing a detected Telegram channel."""
+    context.user_data["channel_title"] = channel_username
+    logging.info(f"Processing Telegram channel identified as: {channel_username} (Source: {channel_source_type})")
+    await update.message.chat.send_action("typing")
+    try:
+        feeds = miniflux_client.get_feeds()
+        target_feed = None
+        feed_url_check = "" # Store URL if found
+        for feed in feeds:
+            feed_url_check = feed.get("feed_url", "")
+            parsed_check = parse_feed_url(feed_url_check)
+            existing_channel_name = parsed_check.get("channel_name")
+            if existing_channel_name and channel_username.lower() == existing_channel_name.lower():
+                target_feed = feed
+                logging.info(f"Found existing feed for channel '{channel_username}': ID={feed.get('id')}, URL={feed_url_check}")
+                break
 
-            if target_feed:
-                logging.info(f"Channel @{channel_username} is already in subscriptions (matched channel name)")
-                feed_id = target_feed.get("id")
-                try:
-                    # Re-fetch feed for latest URL
-                    updated_target_feed = miniflux_client.get_feed(feed_id)
-                    feed_url_current = updated_target_feed.get("feed_url", "")
-                    # Use parser to get current flags
-                    parsed_current = parse_feed_url(feed_url_current)
-                    current_flags = parsed_current.get("flags") or []
-                    logging.info(f"Current flags for @{channel_username}: {current_flags}")
-                except Exception as e:
-                    logging.error(f"Failed to fetch current flags for feed {feed_id}: {e}")
-                    await update.message.reply_text("Error fetching current flag status. Proceeding without status.")
-                    current_flags = [] # Default to empty list on error
+        if target_feed:
+            logging.info(f"Channel @{channel_username} is already in subscriptions (matched channel name)")
+            feed_id = target_feed.get("id")
+            current_merge_seconds = None # Default
+            try:
+                # Re-fetch feed for latest URL
+                updated_target_feed = miniflux_client.get_feed(feed_id)
+                feed_url_current = updated_target_feed.get("feed_url", "")
+                # Use parser to get current flags and merge time
+                parsed_current = parse_feed_url(feed_url_current)
+                current_flags = parsed_current.get("flags") or []
+                current_merge_seconds = parsed_current.get("merge_seconds") # Get merge time
+                logging.info(f"Current flags for @{channel_username}: {current_flags}, merge_seconds: {current_merge_seconds}")
+            except Exception as e:
+                logging.error(f"Failed to fetch current feed details for feed {feed_id}: {e}")
+                await update.message.reply_text("Error fetching current feed status. Proceeding without status.")
+                current_flags = [] # Default to empty list on error
+                current_merge_seconds = None # Reset on error
 
-                keyboard = create_flag_keyboard(channel_username, current_flags)
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text(
-                    f"Channel @{channel_username} is already in subscriptions. Choose an action:",
-                    reply_markup=reply_markup
-                )
-                return
-
-        except Exception as error:
-            logging.error(f"Failed to check subscriptions or get existing feed details: {error}", exc_info=True)
-            await update.message.reply_text("Failed to check existing subscriptions.")
-            return
-
-        # --- Channel feed does not exist, proceed with category selection --- 
-        try:
-            # Use imported function
-            categories = fetch_categories(miniflux_client)
-        except Exception as error:
-            logging.error(f"Failed to fetch categories: {error}")
-            await update.message.reply_text("Failed to fetch categories from RSS reader.")
-            return
-
-        keyboard = []
-        categories_dict = {}  # Store category information
-        for category in categories:
-            cat_title = category.get("title", "Unknown")
-            cat_id = category.get("id")
-            categories_dict[cat_id] = cat_title
-            keyboard.append([InlineKeyboardButton(cat_title, callback_data=f"cat_{cat_id}")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        context.user_data["categories"] = categories_dict
-        await update.message.reply_text(
-            f"Select category for channel @{channel_username}:", reply_markup=reply_markup
-        )
-        return
-
-    # Case B: Direct RSS URL
-    elif direct_rss_url:
-        try:
-            # Use imported function
-            if check_feed_exists(miniflux_client, direct_rss_url):
-                await update.message.reply_text(f"This RSS feed is already in your subscriptions.")
-                return
-        except Exception as error:
-            logging.error(f"Failed to check if feed exists: {error}")
-            await update.message.reply_text(f"Failed to check if feed exists: {str(error)}")
-            return
-
-        context.user_data["direct_rss_url"] = direct_rss_url
-        try:
-            # Use imported function
-            categories = fetch_categories(miniflux_client)
-        except Exception as error:
-            logging.error(f"Failed to fetch categories: {error}")
-            await update.message.reply_text("Failed to fetch categories from RSS reader.")
-            return
-
-        keyboard = []
-        categories_dict = {}  # Store category information
-        for category in categories:
-            cat_title = category.get("title", "Unknown")
-            cat_id = category.get("id")
-            categories_dict[cat_id] = cat_title
-            keyboard.append([InlineKeyboardButton(cat_title, callback_data=f"cat_{cat_id}")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        context.user_data["categories"] = categories_dict
-        await update.message.reply_text(
-            f"URL is a valid RSS feed. Select category:", reply_markup=reply_markup
-        )
-        return
-
-    # Case C: HTML page with RSS links
-    elif html_rss_links:
-        keyboard = []
-        for i, link in enumerate(html_rss_links):
-            title = link.get('title', f"RSS Feed {i+1}")
-            keyboard.append([InlineKeyboardButton(title, callback_data=f"rss_link_{i}")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        context.user_data["rss_links"] = html_rss_links
-        await update.message.reply_text(
-            f"Found multiple RSS feeds on the webpage. Select one to subscribe:",
-            reply_markup=reply_markup
-        )
-        return
-
-    # Case D: Neither forward, nor known link type
-    else:
-        # Check if the URL check failed silently (URL looked like http but wasn't RSS/HTML)
-        if msg.text and (msg.text.startswith('http://') or msg.text.startswith('https://')) and not channel_username and not direct_rss_url and not html_rss_links:
+            # Pass merge time to keyboard function
+            keyboard = create_flag_keyboard(channel_username, current_flags, current_merge_seconds)
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(
-                "The URL does not appear to be a valid RSS feed and no RSS links were found on the webpage."
+                f"Channel @{channel_username} is already in subscriptions. Choose an action:",
+                reply_markup=reply_markup
             )
-        # Otherwise, show the default help message
-        else:
-            logging.info("Message is not a forward, channel link, RSS feed, or webpage with RSS links.")
-            await update.message.reply_text("Please forward a message from any channel (public or private) or send a link to a message (e.g., https://t.me/channel_name/123 or https://t.me/-1002069358234/1951), or send a direct RSS feed URL.")
+            return
+
+    except Exception as error:
+        logging.error(f"Failed to check subscriptions or get existing feed details: {error}", exc_info=True)
+        await update.message.reply_text("Failed to check existing subscriptions.")
         return
+
+    # --- Channel feed does not exist, proceed with category selection --- 
+    try:
+        # Use imported function
+        categories = fetch_categories(miniflux_client)
+    except Exception as error:
+        logging.error(f"Failed to fetch categories: {error}")
+        await update.message.reply_text("Failed to fetch categories from RSS reader.")
+        return
+
+    keyboard = []
+    categories_dict = {}  # Store category information
+    for category in categories:
+        cat_title = category.get("title", "Unknown")
+        cat_id = category.get("id")
+        categories_dict[cat_id] = cat_title
+        keyboard.append([InlineKeyboardButton(cat_title, callback_data=f"cat_{cat_id}")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    context.user_data["categories"] = categories_dict
+    await update.message.reply_text(
+        f"Select category for channel @{channel_username}:", reply_markup=reply_markup
+    )
+
+async def _handle_direct_rss(update: Update, context: CallbackContext, direct_rss_url: str):
+    """Handles logic for processing a direct RSS feed URL."""
+    try:
+        # Use imported function
+        if check_feed_exists(miniflux_client, direct_rss_url):
+            await update.message.reply_text(f"This RSS feed is already in your subscriptions.")
+            return
+    except Exception as error:
+        logging.error(f"Failed to check if feed exists: {error}")
+        await update.message.reply_text(f"Failed to check if feed exists: {str(error)}")
+        return
+
+    context.user_data["direct_rss_url"] = direct_rss_url
+    try:
+        # Use imported function
+        categories = fetch_categories(miniflux_client)
+    except Exception as error:
+        logging.error(f"Failed to fetch categories: {error}")
+        await update.message.reply_text("Failed to fetch categories from RSS reader.")
+        return
+
+    keyboard = []
+    categories_dict = {}  # Store category information
+    for category in categories:
+        cat_title = category.get("title", "Unknown")
+        cat_id = category.get("id")
+        categories_dict[cat_id] = cat_title
+        keyboard.append([InlineKeyboardButton(cat_title, callback_data=f"cat_{cat_id}")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    context.user_data["categories"] = categories_dict
+    await update.message.reply_text(
+        f"URL is a valid RSS feed. Select category:", reply_markup=reply_markup
+    )
+
+async def _handle_html_rss_links(update: Update, context: CallbackContext, html_rss_links: list):
+    """Handles logic when multiple RSS links are found on an HTML page."""
+    keyboard = []
+    for i, link in enumerate(html_rss_links):
+        title = link.get('title', f"RSS Feed {i+1}")
+        keyboard.append([InlineKeyboardButton(title, callback_data=f"rss_link_{i}")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    context.user_data["rss_links"] = html_rss_links
+    await update.message.reply_text(
+        f"Found multiple RSS feeds on the webpage. Select one to subscribe:",
+        reply_markup=reply_markup
+    )
+
+async def _handle_unknown_message(update: Update, context: CallbackContext):
+    """Handles messages that are not recognized as channels, RSS links, etc."""
+    msg = update.message
+    # Check if the URL check failed silently (URL looked like http but wasn't RSS/HTML)
+    # This requires re-checking the message text as it wasn't passed down
+    if msg and msg.text and (msg.text.startswith('http://') or msg.text.startswith('https://')):
+        # We already know it wasn't handled as channel/direct/html from the main function logic
+        await update.message.reply_text(
+            "The URL does not appear to be a valid RSS feed and no RSS links were found on the webpage."
+        )
+    # Otherwise, show the default help message
+    else:
+        logging.info("Message is not a forward, channel link, RSS feed, or webpage with RSS links.")
+        await update.message.reply_text("Please forward a message from any channel (public or private) or send a link to a message (e.g., https://t.me/channel_name/123 or https://t.me/-1002069358234/1951), or send a direct RSS feed URL.")
+
+async def handle_message(update: Update, context: CallbackContext):
+    """
+    Handle incoming messages in private chat. Routes to specific handlers based on state or message content.
+    Only processes messages from admin user.
+    """
+    msg = update.message
+    if not msg:
+        return
+
+    user = msg.from_user
+    if not user or not is_admin(user.username):
+        logging.warning(f"Unauthorized access attempt via message from user: {user.username if user else 'Unknown'}")
+        await update.message.reply_text("Access denied. Only admin can use this bot.")
+        return
+
+    # --- State Handlers ---
+    current_state = context.user_data.get('state')
+    if current_state == 'awaiting_regex':
+        await _handle_awaiting_regex(update, context)
+        return
+    elif current_state == 'awaiting_merge_time':
+        await _handle_awaiting_merge_time(update, context)
+        return
+
+    # --- Media Group Handling ---
+    # Check if this message is part of a media group we've already processed
+    media_group_id = msg.media_group_id
+    if media_group_id and context.user_data.get("processed_media_group_id") == media_group_id:
+        logging.info(f"Skipping duplicate message from media group {media_group_id}")
+        return
+
+    # --- Content Parsing and Handling ---
+    channel_username, channel_source_type, direct_rss_url, html_rss_links = await _parse_message_content(update, context)
+
+    # Route to appropriate handler based on parsed content
+    if channel_username:
+        await _handle_telegram_channel(update, context, channel_username, channel_source_type)
+    elif direct_rss_url:
+        await _handle_direct_rss(update, context, direct_rss_url)
+    elif html_rss_links:
+        await _handle_html_rss_links(update, context, html_rss_links)
+    else:
+        # Handle cases where parsing returned nothing or indicated an error handled within _parse_message_content
+        # Also handles messages that weren't forwards, links, or URLs.
+        # We call _handle_unknown_message which includes logic for URLs that weren't valid RSS/HTML.
+        await _handle_unknown_message(update, context)
 
 async def button_callback(update: Update, context: CallbackContext):
     """
@@ -650,7 +702,7 @@ async def button_callback(update: Update, context: CallbackContext):
             await query.message.chat.send_action("typing")
             try:
                 logging.info(f"Subscribing to direct RSS feed '{feed_url}' in category {cat_id}")
-                miniflux_client.create_feed(feed_url, category_id=cat_id)
+                await miniflux_client.create_feed(feed_url, category_id=cat_id)
                 category_title = context.user_data.get("categories", {}).get(cat_id, "Unknown")
                 url_instance = MINIFLUX_BASE_URL.rstrip('/').replace('http://', '').replace('https://', '')
                 await query.edit_message_text(
@@ -695,7 +747,7 @@ async def button_callback(update: Update, context: CallbackContext):
         await query.message.chat.send_action("typing")
         try:
             logging.info(f"Subscribing to feed '{feed_url}' in category {cat_id}")
-            miniflux_client.create_feed(feed_url, category_id=cat_id)
+            await miniflux_client.create_feed(feed_url, category_id=cat_id)
             category_title = context.user_data.get("categories", {}).get(cat_id, "Unknown")
             url_instance = MINIFLUX_BASE_URL.rstrip('/').replace('http://', '').replace('https://', '')
             await query.edit_message_text(
@@ -727,10 +779,11 @@ async def button_callback(update: Update, context: CallbackContext):
         flag_name = parts[2]
 
         # Call the shared function for adding flags (which now uses url_constructor)
-        success, message, updated_flags = await add_flag_to_channel(channel_name, flag_name)
+        # It now returns merge time as well
+        success, message, updated_flags, updated_merge_seconds = await add_flag_to_channel(channel_name, flag_name)
 
-        # Create keyboard with updated flag statuses
-        keyboard = create_flag_keyboard(channel_name, updated_flags) # updated_flags comes from add_flag_to_channel
+        # Create keyboard with updated flag statuses and merge time
+        keyboard = create_flag_keyboard(channel_name, updated_flags, updated_merge_seconds)
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text(
@@ -750,10 +803,11 @@ async def button_callback(update: Update, context: CallbackContext):
         flag_name = parts[2]
 
         # Call the shared function for removing flags (which now uses url_constructor)
-        success, message, updated_flags = await remove_flag_from_channel(channel_name, flag_name)
+        # It now returns merge time as well
+        success, message, updated_flags, updated_merge_seconds = await remove_flag_from_channel(channel_name, flag_name)
 
-        # Create keyboard with updated flag statuses
-        keyboard = create_flag_keyboard(channel_name, updated_flags) # updated_flags comes from remove_flag_from_channel
+        # Create keyboard with updated flag statuses and merge time
+        keyboard = create_flag_keyboard(channel_name, updated_flags, updated_merge_seconds)
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text(
@@ -972,8 +1026,10 @@ async def add_flag_to_channel(channel_name, flag_to_add):
         flag_to_add: Flag to add
         
     Returns:
-        tuple: (success, message, updated_flags list)
+        tuple: (success, message, updated_flags list, updated_merge_seconds int | None)
     """
+    current_flags_on_error = []
+    current_merge_seconds_on_error = None
     try:
         # Find the feed
         feeds = miniflux_client.get_feeds()
@@ -990,10 +1046,13 @@ async def add_flag_to_channel(channel_name, flag_to_add):
                 target_feed = feed # Keep feed data if needed, e.g., title
                 feed_id = feed.get("id")
                 current_url = feed_url_check # Store the found URL
+                # Store potentially needed values for error return
+                current_flags_on_error = parsed_check.get("flags") or []
+                current_merge_seconds_on_error = parsed_check.get("merge_seconds")
                 break
         
         if not target_feed or not feed_id:
-            return False, f"Channel @{channel_name} not found in subscriptions.", []
+            return False, f"Channel @{channel_name} not found in subscriptions.", [], None
         
         # Optionally re-fetch feed for the absolute latest URL, though often unnecessary
         # try:
@@ -1004,20 +1063,21 @@ async def add_flag_to_channel(channel_name, flag_to_add):
         #      # Proceed with current_url found during the loop if fetch fails
 
         if not current_url: # Should not happen if target_feed was found, but safety check
-            return False, f"Could not determine current URL for @{channel_name}.", []
+            return False, f"Could not determine current URL for @{channel_name}.", current_flags_on_error, current_merge_seconds_on_error
 
         # Parse the current URL
         parsed_data = parse_feed_url(current_url)
         current_flags = parsed_data.get("flags") or []
+        current_merge_seconds = parsed_data.get("merge_seconds") # Get current merge time for error case
         base_url_for_build = parsed_data.get("base_url")
         
         if not base_url_for_build:
             logging.error(f"Could not extract base URL from {current_url} for @{channel_name}")
-            return False, "Internal error: could not determine base URL.", current_flags
+            return False, "Internal error: could not determine base URL.", current_flags, current_merge_seconds
 
         # Check if flag already exists
         if flag_to_add in current_flags:
-            return False, f"Flag '{flag_to_add}' is already set for channel @{channel_name}.", current_flags
+            return False, f"Flag '{flag_to_add}' is already set for channel @{channel_name}.", current_flags, current_merge_seconds
         
         # Add new flag
         new_flags = current_flags + [flag_to_add]
@@ -1028,7 +1088,7 @@ async def add_flag_to_channel(channel_name, flag_to_add):
             channel_name=channel_name,
             flags=new_flags,
             exclude_text=parsed_data.get("exclude_text"),
-            merge_seconds=parsed_data.get("merge_seconds")
+            merge_seconds=parsed_data.get("merge_seconds") # Keep existing merge time
         )
         
         logging.info(f"Original feed URL: {current_url}")
@@ -1039,43 +1099,32 @@ async def add_flag_to_channel(channel_name, flag_to_add):
         
         if not success:
             # Use new_url in the message as that's what we tried to set
-            return False, f"Failed to update feed URL via Miniflux API for @{channel_name}. Error: {error_message}. Target URL was: {new_url}", current_flags
+            return False, f"Failed to update feed URL via Miniflux API for @{channel_name}. Error: {error_message}. Target URL was: {new_url}", current_flags, current_merge_seconds
         
         # Parse the *actual* updated URL returned by miniflux or re-fetch
         # Re-fetching is safer to guarantee we have the canonical state
+        final_flags = new_flags # Default in case re-fetch fails
+        final_merge_seconds = parsed_data.get("merge_seconds") # Default in case re-fetch fails
         try:
             final_feed_data = miniflux_client.get_feed(feed_id)
             final_url = final_feed_data.get("feed_url", "")
             final_parsed_data = parse_feed_url(final_url)
             final_flags = final_parsed_data.get("flags") or []
+            final_merge_seconds = final_parsed_data.get("merge_seconds") # Get final merge time
             logging.info(f"URL after update confirmation for @{channel_name}: {final_url}")
         except Exception as e_final:
-            logging.error(f"Failed to fetch final feed state for @{channel_name} after adding flag: {e_final}. Using flags from successful update attempt.")
-            # Fallback: Assume the new_flags we intended are now set
-            final_flags = new_flags
+            logging.error(f"Failed to fetch final feed state for @{channel_name} after adding flag: {e_final}. Using flags/merge_time from successful update attempt.")
+            # Fallback: Assume the new_flags we intended are now set, keep existing merge time
 
 
         flags_display = " ".join(final_flags) if final_flags else "none"
-        return True, f"Added flag '{flag_to_add}' to channel @{channel_name}.\nCurrent flags: {flags_display}", final_flags
+        return True, f"Added flag '{flag_to_add}' to channel @{channel_name}.\nCurrent flags: {flags_display}", final_flags, final_merge_seconds
         
     except Exception as e:
         logging.error(f"Failed during add_flag_to_channel for {channel_name}: {e}", exc_info=True)
-        # Attempt to return current flags if possible, otherwise empty list
-        # This requires fetching state again, which might also fail. Best effort.
-        current_flags_on_error = []
-        try:
-            # Re-use feed finding logic if possible, or simplify
-            feeds = miniflux_client.get_feeds()
-            for feed in feeds:
-                feed_url_err = feed.get("feed_url", "")
-                parsed_err = parse_feed_url(feed_url_err)
-                channel_err = parsed_err.get("channel_name")
-                if channel_err and channel_err.lower() == channel_name.lower():
-                    current_flags_on_error = parsed_err.get("flags") or []
-                    break
-        except Exception:
-            pass # Ignore errors during error handling fallback
-        return False, f"Failed to add flag: {str(e)}", current_flags_on_error
+        # Attempt to return current flags/merge_time if possible, otherwise defaults
+        # The values were captured at the start of the try block or during loop
+        return False, f"Failed to add flag: {str(e)}", current_flags_on_error, current_merge_seconds_on_error
 
 
 async def remove_flag_from_channel(channel_name, flag_to_remove):
@@ -1087,8 +1136,10 @@ async def remove_flag_from_channel(channel_name, flag_to_remove):
         flag_to_remove: Flag to remove
         
     Returns:
-        tuple: (success, message, updated_flags list)
+        tuple: (success, message, updated_flags list, updated_merge_seconds int | None)
     """
+    current_flags_on_error = []
+    current_merge_seconds_on_error = None
     try:
         # Find the feed
         feeds = miniflux_client.get_feeds()
@@ -1105,27 +1156,31 @@ async def remove_flag_from_channel(channel_name, flag_to_remove):
                 target_feed = feed
                 feed_id = feed.get("id")
                 current_url = feed_url_check
+                # Store potentially needed values for error return
+                current_flags_on_error = parsed_check.get("flags") or []
+                current_merge_seconds_on_error = parsed_check.get("merge_seconds")
                 break
         
         if not target_feed or not feed_id:
-            return False, f"Channel @{channel_name} not found in subscriptions.", []
+            return False, f"Channel @{channel_name} not found in subscriptions.", [], None
 
         # Optional: Re-fetch for latest URL
         # ... (similar logic as in add_flag_to_channel if needed) ...
-        if not current_url: return False, f"Could not determine current URL for @{channel_name}.", []
+        if not current_url: return False, f"Could not determine current URL for @{channel_name}.", current_flags_on_error, current_merge_seconds_on_error
 
         # Parse the current URL
         parsed_data = parse_feed_url(current_url)
         current_flags = parsed_data.get("flags") or []
+        current_merge_seconds = parsed_data.get("merge_seconds") # Get current merge time
         base_url_for_build = parsed_data.get("base_url")
 
         if not base_url_for_build:
             logging.error(f"Could not extract base URL from {current_url} for @{channel_name}")
-            return False, "Internal error: could not determine base URL.", current_flags
+            return False, "Internal error: could not determine base URL.", current_flags, current_merge_seconds
 
         # Check if flag exists
         if flag_to_remove not in current_flags:
-            return False, f"Flag '{flag_to_remove}' is not set for channel @{channel_name}.", current_flags
+            return False, f"Flag '{flag_to_remove}' is not set for channel @{channel_name}.", current_flags, current_merge_seconds
         
         # Remove flag
         new_flags = [flag for flag in current_flags if flag != flag_to_remove]
@@ -1137,7 +1192,7 @@ async def remove_flag_from_channel(channel_name, flag_to_remove):
             channel_name=channel_name,
             flags=new_flags if new_flags else None, # Pass None if empty
             exclude_text=parsed_data.get("exclude_text"),
-            merge_seconds=parsed_data.get("merge_seconds")
+            merge_seconds=parsed_data.get("merge_seconds") # Keep existing merge time
         )
         
         logging.info(f"Original feed URL: {current_url}")
@@ -1147,49 +1202,39 @@ async def remove_flag_from_channel(channel_name, flag_to_remove):
         success, _updated_url_from_miniflux, error_message = update_feed_url_api(feed_id, new_url, miniflux_client)
         
         if not success:
-            return False, f"Failed to update feed URL via Miniflux API for @{channel_name}. Error: {error_message}. Target URL was: {new_url}", current_flags
+            return False, f"Failed to update feed URL via Miniflux API for @{channel_name}. Error: {error_message}. Target URL was: {new_url}", current_flags, current_merge_seconds
         
         # Parse the *actual* updated URL or re-fetch
+        final_flags = new_flags # Default
+        final_merge_seconds = parsed_data.get("merge_seconds") # Default
         try:
             final_feed_data = miniflux_client.get_feed(feed_id)
             final_url = final_feed_data.get("feed_url", "")
             final_parsed_data = parse_feed_url(final_url)
             final_flags = final_parsed_data.get("flags") or []
+            final_merge_seconds = final_parsed_data.get("merge_seconds") # Get final merge time
             logging.info(f"URL after update confirmation for @{channel_name}: {final_url}")
         except Exception as e_final:
-            logging.error(f"Failed to fetch final feed state for @{channel_name} after removing flag: {e_final}. Using flags from successful update attempt.")
-            # Fallback: Assume the new_flags we intended are now set
-            final_flags = new_flags
-
+            logging.error(f"Failed to fetch final feed state for @{channel_name} after removing flag: {e_final}. Using flags/merge_time from successful update attempt.")
+            # Fallback: Assume the new_flags we intended are now set, keep existing merge time
 
         flags_display = " ".join(final_flags) if final_flags else "none"
-        return True, f"Removed flag '{flag_to_remove}' from channel @{channel_name}.\nCurrent flags: {flags_display}", final_flags
+        return True, f"Removed flag '{flag_to_remove}' from channel @{channel_name}.\nCurrent flags: {flags_display}", final_flags, final_merge_seconds
         
     except Exception as e:
         logging.error(f"Failed during remove_flag_from_channel for {channel_name}: {e}", exc_info=True)
-        # Attempt to return current flags if possible
-        current_flags_on_error = []
-        try:
-            feeds = miniflux_client.get_feeds()
-            for feed in feeds:
-                feed_url_err = feed.get("feed_url", "")
-                parsed_err = parse_feed_url(feed_url_err)
-                channel_err = parsed_err.get("channel_name")
-                if channel_err and channel_err.lower() == channel_name.lower():
-                    current_flags_on_error = parsed_err.get("flags") or []
-                    break
-        except Exception:
-            pass
-        return False, f"Failed to remove flag: {str(e)}", current_flags_on_error
+        # Attempt to return current flags/merge_time if possible
+        return False, f"Failed to remove flag: {str(e)}", current_flags_on_error, current_merge_seconds_on_error
 
-def create_flag_keyboard(channel_username, current_flags):
+def create_flag_keyboard(channel_username, current_flags, current_merge_seconds=None):
     """
     Create keyboard with flag options, showing current status (✅/❌),
-    edit regex, edit merge time, and delete buttons.
+    edit regex, edit merge time (with current value), and delete buttons.
 
     Args:
         channel_username: Channel username or ID
         current_flags: List of currently set flags (should be [] if None)
+        current_merge_seconds: The current merge time in seconds (or None)
 
     Returns:
         list: Keyboard buttons
@@ -1219,7 +1264,13 @@ def create_flag_keyboard(channel_username, current_flags):
             row = []
 
     keyboard.append([InlineKeyboardButton("Edit Regex", callback_data=f"edit_regex|{channel_username}")])
-    keyboard.append([InlineKeyboardButton("Edit Merge Time", callback_data=f"edit_merge_time|{channel_username}")])
+    
+    # Add merge time button with current value if available
+    merge_time_text = "Edit Merge Time"
+    if current_merge_seconds is not None:
+        merge_time_text += f" ({current_merge_seconds}s)"
+    keyboard.append([InlineKeyboardButton(merge_time_text, callback_data=f"edit_merge_time|{channel_username}")])
+    
     keyboard.append([InlineKeyboardButton("Delete channel", callback_data=f"delete|{channel_username}")])
 
     return keyboard
@@ -1286,6 +1337,11 @@ def main():
     """
     Initialize the Telegram bot and register handlers.
     """
+    # Check if config loading/client initialization failed - moved from module level
+    if miniflux_client is None or TELEGRAM_TOKEN is None:
+        logging.critical("Initialization failed (check config.py logs). Exiting.")
+        sys.exit(1) # Exit if essential components failed
+    
     # Define setup_commands function
     async def post_init(application):
         """Set up bot commands after initialization"""

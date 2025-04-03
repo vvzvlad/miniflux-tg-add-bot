@@ -72,7 +72,7 @@ def build_feed_url(
 
     Args:
         base_url: The base URL (e.g., "http://rss-bridge.org/bridge/TelegramBridge").
-                  It might already contain the channel name in the path.
+                It might already contain the channel name in the path.
         channel_name: The channel name/ID (used for verification and potentially adding to path if needed).
         flags: A list of flags to include in 'exclude_flags'.
         exclude_text: The text/regex for 'exclude_text'.
