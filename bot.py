@@ -911,7 +911,7 @@ async def button_callback(update: Update, context: CallbackContext):
                 return
 
             # Delete the feed using the found ID
-            miniflux_client.delete_feed(target_feed_id)
+            await miniflux_client.delete_feed(target_feed_id)
 
             await query.edit_message_text(f"Channel @{channel_name} has been deleted from subscriptions.")
 

@@ -63,6 +63,25 @@ def test_fetch_categories_api_error(mock_miniflux_client, mock_response):
         fetch_categories(mock_miniflux_client)
     mock_miniflux_client.get_categories.assert_called_once()
 
+def test_fetch_categories_server_error(mock_miniflux_client, mock_response):
+    """Test fetch_categories raises exception on server error."""
+    mock_response.status_code = 500
+    mock_response.json.return_value = {"error_message": "Internal Server Error"}
+    server_error = ServerError(mock_response)
+    mock_miniflux_client.get_categories.side_effect = server_error
+    
+    with pytest.raises(ServerError):
+        fetch_categories(mock_miniflux_client)
+    mock_miniflux_client.get_categories.assert_called_once()
+
+def test_fetch_categories_generic_error(mock_miniflux_client):
+    """Test fetch_categories raises exception on generic error."""
+    mock_miniflux_client.get_categories.side_effect = Exception("Generic error")
+    
+    with pytest.raises(Exception):
+        fetch_categories(mock_miniflux_client)
+    mock_miniflux_client.get_categories.assert_called_once()
+
 # --- Tests for check_feed_exists ---
 
 def test_check_feed_exists_true(mock_miniflux_client):
@@ -98,6 +117,17 @@ def test_check_feed_exists_api_error(mock_miniflux_client, mock_response):
         check_feed_exists(mock_miniflux_client, "http://some.url")
     mock_miniflux_client.get_feeds.assert_called_once()
 
+def test_check_feed_exists_server_error(mock_miniflux_client, mock_response):
+    """Test check_feed_exists raises exception on server error."""
+    mock_response.status_code = 500
+    mock_response.json.return_value = {"error_message": "Internal Server Error"}
+    server_error = ServerError(mock_response)
+    mock_miniflux_client.get_feeds.side_effect = server_error
+    
+    with pytest.raises(ServerError):
+        check_feed_exists(mock_miniflux_client, "http://some.url")
+    mock_miniflux_client.get_feeds.assert_called_once()
+
 # --- Tests for update_feed_url --- 
 
 @pytest.mark.asyncio
@@ -113,7 +143,7 @@ async def test_update_feed_url_success(mock_miniflux_client):
     mock_miniflux_client.update_feed.assert_awaited_once_with(feed_id, feed_url=new_url)
 
 @pytest.mark.asyncio
-async def test_update_feed_url_api_error(mock_miniflux_client, mock_response):
+async def test_update_feed_url_client_error(mock_miniflux_client, mock_response):
     """Test update_feed_url handles ClientError."""
     feed_id = 124
     new_url = "http://bad.url/feed"
@@ -129,6 +159,40 @@ async def test_update_feed_url_api_error(mock_miniflux_client, mock_response):
     assert returned_url is None
     assert error_reason in error_msg
     assert "Status: 400" in error_msg
+    mock_miniflux_client.update_feed.assert_awaited_once_with(feed_id, feed_url=new_url)
+
+@pytest.mark.asyncio
+async def test_update_feed_url_server_error(mock_miniflux_client, mock_response):
+    """Test update_feed_url handles ServerError."""
+    feed_id = 125
+    new_url = "http://server.error/feed"
+    mock_response.status_code = 500
+    error_reason = "Internal Server Error"
+    mock_response.json.return_value = {"error_message": error_reason}
+    server_error = ServerError(mock_response)
+    mock_miniflux_client.update_feed.side_effect = server_error
+    
+    success, returned_url, error_msg = await update_feed_url(feed_id, new_url, mock_miniflux_client)
+    
+    assert success is False
+    assert returned_url is None
+    assert error_reason in error_msg
+    assert "Status: 500" in error_msg
+    mock_miniflux_client.update_feed.assert_awaited_once_with(feed_id, feed_url=new_url)
+
+@pytest.mark.asyncio
+async def test_update_feed_url_generic_error(mock_miniflux_client):
+    """Test update_feed_url handles generic errors."""
+    feed_id = 126
+    new_url = "http://generic.error/feed"
+    generic_error = Exception("Unexpected error occurred")
+    mock_miniflux_client.update_feed.side_effect = generic_error
+    
+    success, returned_url, error_msg = await update_feed_url(feed_id, new_url, mock_miniflux_client)
+    
+    assert success is False
+    assert returned_url is None
+    assert "Unexpected error occurred" in error_msg
     mock_miniflux_client.update_feed.assert_awaited_once_with(feed_id, feed_url=new_url)
 
 # --- Tests for get_channels_by_category --- 
@@ -212,3 +276,88 @@ def test_get_channels_by_category_no_bridge_feeds(mocker, mock_miniflux_client):
     assert result == {}
     mock_miniflux_client.get_feeds.assert_called_once()
     mock_parse_feed_url.assert_not_called() # Verify parse_feed_url was not called 
+
+def test_get_channels_by_category_api_error(mock_miniflux_client, mock_response):
+    """Test get_channels_by_category raises exception when get_feeds fails."""
+    mock_response.status_code = 503
+    mock_response.json.return_value = {"error_message": "Service Unavailable"}
+    
+    api_error = ClientError(mock_response)
+    mock_miniflux_client.get_feeds.side_effect = api_error
+    
+    test_bridge_url = 'http://b/rss/{channel}'
+    
+    with pytest.raises(ClientError):
+        get_channels_by_category(mock_miniflux_client, test_bridge_url)
+    
+    mock_miniflux_client.get_feeds.assert_called_once()
+
+def test_get_channels_by_category_rss_bridge_url_none(mocker, mock_miniflux_client):
+    """Test get_channels_by_category with RSS_BRIDGE_URL is None."""
+    mock_feeds = [
+        {'id': 101, 'feed_url': 'http://b/rss/chanA', 'title': 'ChanA', 'category': {'id': 10, 'title': 'Category X'}}
+    ]
+    mock_miniflux_client.get_feeds.return_value = mock_feeds
+    
+    # Mock parse_feed_url to return proper channel data for any URL
+    mock_parse_feed_url = mocker.patch('miniflux_api.parse_feed_url')
+    mock_parse_feed_url.return_value = {'channel_name': 'chanA', 'flags': None, 'exclude_text': None, 'merge_seconds': None}
+    
+    # Call with None for RSS_BRIDGE_URL
+    result = get_channels_by_category(mock_miniflux_client, None)
+    
+    # Should still try to parse all feeds without filtering by base URL
+    assert mock_miniflux_client.get_feeds.call_count == 1
+    assert mock_parse_feed_url.call_count == 1
+    assert len(result) == 1
+    assert 'Category X' in result
+
+def test_get_channels_by_category_invalid_rss_bridge_url(mocker, mock_miniflux_client):
+    """Test get_channels_by_category with invalid RSS_BRIDGE_URL (missing {channel} placeholder)."""
+    mock_feeds = [
+        {'id': 101, 'feed_url': 'http://b/rss/chanA', 'title': 'ChanA', 'category': {'id': 10, 'title': 'Category X'}}
+    ]
+    mock_miniflux_client.get_feeds.return_value = mock_feeds
+    
+    # Mock parse_feed_url to return proper channel data for any URL
+    mock_parse_feed_url = mocker.patch('miniflux_api.parse_feed_url')
+    mock_parse_feed_url.return_value = {'channel_name': 'chanA', 'flags': None, 'exclude_text': None, 'merge_seconds': None}
+    
+    # Call with invalid RSS_BRIDGE_URL (no {channel} placeholder)
+    invalid_url = 'http://b/rss/invalid'
+    result = get_channels_by_category(mock_miniflux_client, invalid_url)
+    
+    # Should still try to parse all feeds without filtering by base URL
+    assert mock_miniflux_client.get_feeds.call_count == 1
+    assert mock_parse_feed_url.call_count == 1
+    assert len(result) == 1
+    assert 'Category X' in result
+
+def test_get_channels_by_category_parse_feed_url_error(mocker, mock_miniflux_client):
+    """Test get_channels_by_category handles parse_feed_url errors gracefully."""
+    mock_feeds = [
+        {'id': 101, 'feed_url': 'http://b/rss/chanA', 'title': 'ChanA', 'category': {'id': 10, 'title': 'Category X'}},
+        {'id': 102, 'feed_url': 'http://b/rss/error', 'title': 'Error Feed', 'category': {'id': 10, 'title': 'Category X'}}
+    ]
+    mock_miniflux_client.get_feeds.return_value = mock_feeds
+    
+    # Mock parse_feed_url to raise an exception for one feed URL
+    def mock_parse_side_effect(url):
+        if 'error' in url:
+            raise ValueError("Invalid feed URL format")
+        return {'channel_name': 'chanA', 'flags': None, 'exclude_text': None, 'merge_seconds': None}
+    
+    mock_parse_feed_url = mocker.patch('miniflux_api.parse_feed_url')
+    mock_parse_feed_url.side_effect = mock_parse_side_effect
+    
+    # Call with valid RSS_BRIDGE_URL
+    test_bridge_url = 'http://b/rss/{channel}'
+    result = get_channels_by_category(mock_miniflux_client, test_bridge_url)
+    
+    # Should have attempted to parse both feeds
+    assert mock_miniflux_client.get_feeds.call_count == 1
+    assert mock_parse_feed_url.call_count == 2
+    # But only one was successful
+    assert len(result) == 1
+    assert 'Category X' in result
+    assert len(result['Category X']) == 1 

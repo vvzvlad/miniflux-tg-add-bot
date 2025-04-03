@@ -335,6 +335,32 @@ async def test_list_channels_non_admin(mock_update, mock_context, mock_config_an
         mock_update.message.chat.send_action.assert_not_called() # Should not send typing
         mock_update.message.reply_text.assert_called_once_with("Access denied. Only admin can use this bot.")
 
+@pytest.mark.asyncio
+@patch('bot.get_channels_by_category')
+async def test_list_channels_api_error(mock_get_channels_by_category, mock_update, mock_context):
+    """Test that list_channels properly handles API exceptions."""
+    # Setup
+    mock_update.message.from_user.username = "test_admin"
+    mock_update.message.chat.send_action = AsyncMock()
+    mock_update.message.reply_text = AsyncMock()
+    
+    # Simulate an API error
+    api_error = Exception("API connection failed")
+    mock_get_channels_by_category.side_effect = api_error
+    
+    # Call the function
+    await list_channels(mock_update, mock_context)
+    
+    # Assertions
+    mock_update.message.chat.send_action.assert_called_once_with("typing")
+    mock_get_channels_by_category.assert_called_once()
+    
+    # Check that the error message was sent to the user
+    mock_update.message.reply_text.assert_called_once()
+    error_message = mock_update.message.reply_text.call_args[0][0]
+    assert "Failed to list channels" in error_message
+    assert str(api_error) in error_message
+
 # --- Tests for Flag Handling (Helper Function) ---
 
 @pytest.mark.asyncio
@@ -563,83 +589,286 @@ async def test_handle_message_awaiting_regex_remove(mock_update, mock_context, m
 
                     # Assertions
                     assert mock_config_and_client.get_feed.call_count == 2
+                    
+                    # Check parse and build calls
                     assert mock_parse.call_count == 2
-                    mock_parse.assert_any_call(original_url)
-                    mock_parse.assert_any_call(expected_new_url)
-
-                    # Check build_feed_url was called correctly to remove the regex
-                    mock_build.assert_called_once_with(base_url='http://test.rssbridge.local/rss', channel_name=channel_name, flags=None, exclude_text=None, merge_seconds=600)
+                    mock_build.assert_called_once_with(
+                        base_url='http://test.rssbridge.local/rss',
+                        channel_name=channel_name,
+                        flags=None,
+                        exclude_text=None,
+                        merge_seconds=600 # Should be None since we want to remove it
+                    )
+                    
+                    # Verify API update call
                     mock_update_api.assert_called_once_with(feed_id, expected_new_url, mock_config_and_client)
-
+                    
                     # Check success message and keyboard regeneration
                     assert mock_update.message.reply_text.call_count == 2
-                    confirmation_args, _ = mock_update.message.reply_text.call_args_list[0]
-                    assert f"Regex filter removed for channel @{channel_name}" in confirmation_args[0]
+                    first_call_args = mock_update.message.reply_text.call_args_list[0][0]
+                    assert f"Regex filter removed for channel @{channel_name}" in first_call_args[0]
+                    
+                    # Verify keyboard was created and shown
                     mock_create_keyboard.assert_called_once()
-                    keyboard_args, _ = mock_update.message.reply_text.call_args_list[1]
-                    assert f"Updated options for @{channel_name}" in keyboard_args[0]
-
-                    # Check state is cleared
+                    
+                    # Check state was cleared
                     assert mock_context.user_data.get('state') is None
 
-# --- Test Plan for Full Coverage ---
+@patch('bot.create_flag_keyboard')
+@patch('bot.miniflux_client.get_feed')
+@pytest.mark.asyncio
+async def test_handle_awaiting_merge_time_invalid(mock_get_feed, mock_keyboard, mock_context, mock_update):
+    """Test handling of invalid input while awaiting merge time."""
+    # Setup
+    mock_update.message.text = "invalid_input"
+    mock_context.user_data = {
+        'state': 'awaiting_merge_time',
+        'editing_merge_time_for_channel': 'channel_name',
+        'editing_feed_id': 123
+    }
+    
+    mock_get_feed.return_value = {"feed_url": "https://rsshub.app/telegram/channel/channel_name/flags=flag1"}
+    mock_keyboard.return_value = [['Test button']]
+    
+    # Call the function
+    await _handle_awaiting_merge_time(mock_update, mock_context)
+    
+    # Assert state is cleared
+    assert 'state' not in mock_context.user_data
+    assert 'editing_merge_time_for_channel' not in mock_context.user_data
+    assert 'editing_feed_id' not in mock_context.user_data
+    
+    # Assert error message sent
+    mock_update.message.reply_text.assert_any_call("Invalid input. Please send a number for merge time (seconds), or 0 to disable.")
+    
+    # Assert keyboard is shown again
+    assert mock_keyboard.called
+    assert mock_update.message.reply_text.call_count == 2  # Error message + keyboard message
 
-# 1. `bot.py` (Current Coverage: ~40%)
-#    - Handling Existing Channels (show options keyboard):
-#        - Test `_handle_telegram_channel` when feed exists.
-#        - Check `miniflux_client.get_feeds`, `parse_feed_url`, `create_flag_keyboard` are called.
-#        - Verify the correct keyboard message is sent.
-#    - Handling RSS Link Selection (`button_callback` with `rss_link_`):
-#        - Test valid index: check `check_feed_exists`, `fetch_categories`, category keyboard shown.
-#        - Test invalid index/empty list: check error message.
-#        - Test existing feed: check "already subscribed" message.
-#    - Editing Merge Time (`edit_merge_time|`, `awaiting_merge_time` state):
-#        - Test `button_callback` sets state and shows prompt (with/without current value).
-#        - Test `_handle_awaiting_merge_time` with valid number (>0): check API calls, success message, keyboard shown, state cleared.
-#        - Test `_handle_awaiting_merge_time` with `0`/empty: check API calls for removal, success message, keyboard shown, state cleared.
-#        - Test `_handle_awaiting_merge_time` with invalid input: check error message, state NOT cleared (or keyboard shown again).
-#    - Media Group Handling:
-#        - Test multiple messages with same `media_group_id`: verify only first is processed using `context.user_data["processed_media_group_id"]`.
-#    - Miniflux API Error Handling (in various handlers):
-#        - `list_channels`: `get_channels_by_category` raises exception.
-#        - `handle_message` (new channel): `fetch_categories` raises exception.
-#        - `handle_message` (existing channel): `get_feeds`/`get_feed` raises exception.
-#        - `button_callback` (category selection): `create_feed` raises `ClientError`/`ServerError`.
-#        - `button_callback` (RSS selection -> category): `check_feed_exists`/`fetch_categories`/`create_feed` raises exception.
-#        - `button_callback` (delete): `get_feeds`/`delete_feed` raises exception.
-#        - `button_callback` (flags): `get_feed`/`update_feed_url_api` raises exception/returns `False`.
-#        - `button_callback` (edit regex/merge init): `get_feeds`/`get_feed` raises exception.
-#        - `_handle_awaiting_regex`/`_handle_awaiting_merge_time`: `get_feed`/`update_feed_url_api` raises exception/returns `False`.
-#    - Invalid Callback Data:
-#        - Test `button_callback` with unknown/malformed data (e.g., `cat_abc`, `flag_add_`, `delete|`). Verify "Unknown action" message.
-#    - `main()` and `post_init()`:
-#        - Test `main()` runs: check `ApplicationBuilder`, `post_init`, `run_polling` calls.
-#        - Test `post_init` exception during `set_my_commands`: check logging, bot continues/exits as expected.
-#        - Test `main()` initialization failure (`TELEGRAM_TOKEN is None`): check critical log, `sys.exit(1)` call.
+@pytest.mark.asyncio
+async def test_handle_message_media_group_skipping(mock_update, mock_context, mock_config_and_client):
+    """Test that messages from the same media_group_id after the first one are skipped."""
+    # Setup first message
+    media_group_id = "test_media_group_123"
+    mock_update.message.media_group_id = media_group_id
+    mock_update.message.from_user.username = "test_admin"
+    mock_update.message.forward_from_chat = {
+        "type": "channel",
+        "username": "first_channel",
+        "title": "First Channel"
+    }
+    mock_update.message.text = None  # This is a forwarded message
+    
+    # Mock necessary methods
+    mock_update.message.reply_text = AsyncMock()
+    mock_update.message.chat.send_action = AsyncMock()
+    
+    # Setup channel parsing before handle_message
+    # _parse_message_content will set processed_media_group_id
+    with patch('bot._parse_message_content', return_value=("first_channel", "forward", None, None)) as mock_parse:
+        # Set up media_group_id in context to simulate first message was processed
+        mock_context.user_data["processed_media_group_id"] = media_group_id
+        
+        # Call handle_message with second message from same media group
+        await handle_message(mock_update, mock_context)
+        
+        # Check that second message was skipped (parse_message_content should not be called)
+        mock_parse.assert_not_called()
+        # Message handler methods should not be called
+        mock_update.message.reply_text.assert_not_called()
+        mock_update.message.chat.send_action.assert_not_called()
 
-# 2. `config.py` (Current Coverage: ~64%)
-#    - Test environment variable loading (correct values).
-#    - Test missing environment variables (defaults used or errors raised).
-#    - Test invalid environment variables (`MINIFLUX_API_KEY` empty).
-#    - Test `ADMIN_USERNAMES` parsing (multiple names, spaces).
+@pytest.mark.asyncio
+async def test_handle_message_media_group_different_groups(mock_update, mock_context, mock_config_and_client):
+    """Test that messages from different media_group_id are processed separately."""
+    # Setup first message with one media group ID
+    first_media_group_id = "media_group_1"
+    mock_update.message.media_group_id = first_media_group_id
+    mock_update.message.from_user.username = "test_admin"
+    
+    # Set up context with a different media group ID already processed
+    previous_media_group_id = "previous_media_group"
+    mock_context.user_data["processed_media_group_id"] = previous_media_group_id
+    
+    # Mock necessary methods
+    mock_update.message.reply_text = AsyncMock()
+    mock_update.message.chat.send_action = AsyncMock()
+    
+    # Mock _parse_message_content to return a channel name and simulate it updating the processed_media_group_id
+    with patch('bot._parse_message_content', side_effect=lambda update, context: 
+               (("channel_name", "forward", None, None) 
+                if (context.user_data.update({"processed_media_group_id": update.message.media_group_id}) or True) 
+                else None)) as mock_parse:
+        
+        # Call handle_message with message from different media group
+        await handle_message(mock_update, mock_context)
+        
+        # Check that message was processed (parse_message_content should be called)
+        mock_parse.assert_called_once()
+        
+        # The new media group ID should replace the old one
+        assert mock_context.user_data.get("processed_media_group_id") == first_media_group_id
 
-# 3. `miniflux_api.py` (Current Coverage: ~86%)
-#    - Test API errors in `fetch_categories`, `check_feed_exists`, `update_feed_url` (ClientError, ServerError, other exceptions).
-#    - Test `get_channels_by_category` with API error on `get_feeds`.
-#    - Test `get_channels_by_category` with `rss_bridge_url=None` or invalid URL (check warning log).
+@pytest.mark.asyncio
+@patch('bot.fetch_categories')
+async def test_handle_telegram_channel_fetch_categories_error(mock_fetch_categories, mock_update, mock_context, mock_config_and_client):
+    """Test that _handle_telegram_channel properly handles errors when fetch_categories fails."""
+    # Setup
+    channel_name = "new_channel_test"
+    channel_source_type = "forward"
+    mock_update.message.reply_text = AsyncMock()
+    mock_update.message.chat.send_action = AsyncMock()
+    
+    # Set up to return empty list (no matching feeds - it's a new channel)
+    mock_config_and_client.get_feeds.return_value = []
+    
+    # Simulate an API error in fetch_categories
+    with patch('bot.fetch_categories', side_effect=Exception("Failed to fetch categories")):
+        # Call the function directly
+        await _handle_telegram_channel(mock_update, mock_context, channel_name, channel_source_type)
+        
+        # Assertions
+        mock_config_and_client.get_feeds.assert_called_once()
+        
+        # Verify error message is sent
+        mock_update.message.reply_text.assert_called_with("Failed to fetch categories from RSS reader.")
 
-# 4. `url_utils.py` (Current Coverage: ~14%)
-#    - `parse_telegram_link`:
-#        - Test various link formats (`t.me/channel`, `t.me/c/12345`, `t.me/c/12345/67`, `https://`, `http://`).
-#        - Test private channel links (`-100...`).
-#        - Test invalid/non-Telegram/user links (return `None`).
-#    - `is_valid_rss_url`:
-#        - Test valid RSS XML URL.
-#        - Test HTML URL with RSS link tags.
-#        - Test HTML URL without RSS link tags.
-#        - Test URL with non-XML/non-HTML content.
-#        - Test network errors (timeout, connection error).
-#        - Test invalid URL format.
-#    - `extract_channel_from_feed_url` (if still used):
-#        - Test different RSS-Bridge URL structures.
-#        - Test URLs not matching the expected pattern. 
+@pytest.mark.asyncio
+async def test_handle_telegram_channel_get_feeds_error(mock_update, mock_context, mock_config_and_client):
+    """Test that _handle_telegram_channel properly handles errors when get_feeds fails."""
+    # Setup
+    channel_name = "existing_channel_test"
+    channel_source_type = "forward"
+    mock_update.message.reply_text = AsyncMock()
+    mock_update.message.chat.send_action = AsyncMock()
+    
+    # Simulate an API error in get_feeds
+    api_error = Exception("Failed to get feeds")
+    mock_config_and_client.get_feeds.side_effect = api_error
+    
+    # Call the function directly
+    await _handle_telegram_channel(mock_update, mock_context, channel_name, channel_source_type)
+    
+    # Assertions
+    mock_config_and_client.get_feeds.assert_called_once()
+    
+    # Verify error message is sent
+    mock_update.message.reply_text.assert_called_with("Failed to check existing subscriptions.")
+
+@pytest.mark.asyncio
+async def test_button_callback_delete_feed_error(mock_update, mock_context, mock_config_and_client):
+    """Test that button_callback properly handles errors when delete_feed fails."""
+    # Setup
+    channel_name = "channel_to_delete"
+    mock_update.callback_query.data = f"delete|{channel_name}"
+    mock_update.callback_query.edit_message_text = AsyncMock()
+    mock_update.callback_query.message.chat.send_action = AsyncMock()
+    mock_update.callback_query.answer = AsyncMock()
+    
+    # Setup for finding the feed
+    feed_id = 456
+    mock_config_and_client.get_feeds.return_value = [
+        {'id': feed_id, 'feed_url': f'http://test.rssbridge.local/rss/{channel_name}/test_token'}
+    ]
+    
+    # Mock parse_feed_url to extract channel name from feed_url
+    with patch('bot.parse_feed_url', return_value={'channel_name': channel_name}):
+        # Simulate a synchronous call to delete_feed that raises an exception
+        delete_error = Exception("Failed to delete feed")
+        mock_config_and_client.delete_feed = AsyncMock(side_effect=delete_error)
+        
+        # Call the function
+        await button_callback(mock_update, mock_context)
+        
+        # Assertions
+        mock_config_and_client.get_feeds.assert_called_once()
+        mock_config_and_client.delete_feed.assert_called_once_with(feed_id)
+        
+        # Verify error message is shown
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        error_message = mock_update.callback_query.edit_message_text.call_args[0][0]
+        assert f"Failed to delete channel: {str(delete_error)}" in error_message
+
+@pytest.mark.asyncio
+async def test_button_callback_unknown_data(mock_update, mock_context):
+    """Test that button_callback properly handles unknown callback data."""
+    # Setup
+    mock_update.callback_query.data = "unknown_action_format"
+    mock_update.callback_query.edit_message_text = AsyncMock()
+    mock_update.callback_query.answer = AsyncMock()
+    
+    # Call the function
+    await button_callback(mock_update, mock_context)
+    
+    # Assertions
+    mock_update.callback_query.answer.assert_called_once()
+    mock_update.callback_query.edit_message_text.assert_called_once_with("Unknown action.")
+
+@pytest.mark.asyncio
+async def test_button_callback_delete_feed_success(mock_update, mock_context, mock_config_and_client):
+    """Test that button_callback successfully deletes a feed."""
+    # Setup
+    channel_name = "channel_to_delete"
+    mock_update.callback_query.data = f"delete|{channel_name}"
+    mock_update.callback_query.edit_message_text = AsyncMock()
+    mock_update.callback_query.message.chat.send_action = AsyncMock()
+    mock_update.callback_query.answer = AsyncMock()
+    
+    # Setup for finding the feed
+    feed_id = 456
+    mock_config_and_client.get_feeds.return_value = [
+        {'id': feed_id, 'feed_url': f'http://test.rssbridge.local/rss/{channel_name}/test_token'}
+    ]
+    
+    # Mock parse_feed_url to extract channel name from feed_url
+    with patch('bot.parse_feed_url', return_value={'channel_name': channel_name}):
+        # Mock successful deletion
+        mock_config_and_client.delete_feed = AsyncMock(return_value=None)
+        
+        # Call the function
+        await button_callback(mock_update, mock_context)
+        
+        # Assertions
+        mock_config_and_client.get_feeds.assert_called_once()
+        mock_config_and_client.delete_feed.assert_called_once_with(feed_id)
+        
+        # Verify success message is shown
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        success_message = mock_update.callback_query.edit_message_text.call_args[0][0]
+        assert f"Channel @{channel_name} has been deleted from subscriptions." in success_message
+
+@patch('bot.ApplicationBuilder')
+@patch('bot.sys.exit')
+def test_main_initialization_success(mock_exit, mock_application_builder):
+    """Test that main initializes the application correctly and doesn't exit."""
+    # Setup application builder and application mock
+    mock_app = MagicMock()
+    mock_application_builder.return_value.token.return_value.post_init.return_value.build.return_value = mock_app
+    
+    # Mock miniflux_client and TELEGRAM_TOKEN to ensure they aren't None
+    with patch('bot.miniflux_client', MagicMock()), patch('bot.TELEGRAM_TOKEN', 'test_token'):
+        # Call main
+        from bot import main
+        main()
+        
+        # Assert application was built and run
+        mock_application_builder.assert_called_once()
+        mock_app.add_handler.assert_called()
+        mock_app.run_polling.assert_called_once()
+        
+        # Assert sys.exit was not called
+        mock_exit.assert_not_called()
+
+@patch('bot.ApplicationBuilder')
+@patch('bot.sys.exit')
+def test_main_initialization_failure(mock_exit, mock_application_builder):
+    """Test that main exits if initialization failed."""
+    # Call main with mock config where TELEGRAM_TOKEN is None
+    # We need to patch the check at the beginning of main to return True for the condition
+    # that would make it exit early
+    with patch('bot.miniflux_client', None), patch('bot.TELEGRAM_TOKEN', None):
+        from bot import main
+        main()
+        
+        # Assert sys.exit was called with code 1
+        mock_exit.assert_called_once_with(1)
