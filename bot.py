@@ -3,6 +3,7 @@ import json
 import urllib.parse
 import sys # Import sys for exit
 import re
+import asyncio
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, CallbackContext
@@ -828,7 +829,7 @@ async def button_callback(update: Update, context: CallbackContext):
             await query.message.chat.send_action("typing")
             try:
                 logging.info(f"Subscribing to direct RSS feed '{feed_url}' in category {cat_id}")
-                await miniflux_client.create_feed(feed_url, category_id=cat_id)
+                await asyncio.to_thread(miniflux_client.create_feed, feed_url, category_id=cat_id)
                 category_title = context.user_data.get("categories", {}).get(cat_id, "Unknown")
                 url_instance = MINIFLUX_BASE_URL.rstrip('/').replace('http://', '').replace('https://', '')
                 await query.edit_message_text(
@@ -873,7 +874,7 @@ async def button_callback(update: Update, context: CallbackContext):
         await query.message.chat.send_action("typing")
         try:
             logging.info(f"Subscribing to feed '{feed_url}' in category {cat_id}")
-            await miniflux_client.create_feed(feed_url, category_id=cat_id)
+            await asyncio.to_thread(miniflux_client.create_feed, feed_url, category_id=cat_id)
             category_title = context.user_data.get("categories", {}).get(cat_id, "Unknown")
             url_instance = MINIFLUX_BASE_URL.rstrip('/').replace('http://', '').replace('https://', '')
             await query.edit_message_text(

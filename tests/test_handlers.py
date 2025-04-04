@@ -6,6 +6,7 @@ from datetime import datetime
 import urllib.parse
 import inspect
 import logging
+import asyncio
 
 # Import from parent directory
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -1645,33 +1646,32 @@ async def test_button_callback_category_selection_api_error(mock_update, mock_co
     mock_update.callback_query.edit_message_text = AsyncMock()
     mock_update.callback_query.message.chat.send_action = AsyncMock()
     mock_update.callback_query.from_user.username = "test_admin"
-    
+
     # Устанавливаем данные в контексте
     channel_name = "error_channel"
     mock_context.user_data = {
         "channel_title": channel_name,
         "categories": {24: "Telegram Channels"}
     }
-    
+
     # Создаем мок-объект response для ClientError
     mock_response = MagicMock()
     mock_response.status_code = 400
     # Настраиваем метод json() для возврата данных об ошибке
     mock_response.json.return_value = {"error_message": "Feed already exists"}
-    
+
     # Создаем объект ClientError с мок-объектом response
     api_error = ClientError(mock_response)
-    
-    # Настраиваем вызов create_feed для выброса исключения
-    mock_config_and_client.create_feed.side_effect = api_error
-    
-    # Вызываем функцию
-    await button_callback(mock_update, mock_context)
-    
+
+    # Патчим asyncio.to_thread, чтобы он выбрасывал исключение
+    with patch('asyncio.to_thread', side_effect=api_error):
+        # Вызываем функцию
+        await button_callback(mock_update, mock_context)
+
     # Проверяем результаты
     mock_update.callback_query.answer.assert_called_once()
     mock_update.callback_query.message.chat.send_action.assert_called_once_with("typing")
-    
+
     # Проверяем сообщение об ошибке
     error_message = mock_update.callback_query.edit_message_text.call_args[0][0]
     assert "Failed to subscribe" in error_message
