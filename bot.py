@@ -593,20 +593,41 @@ async def handle_message(update: Update, context: CallbackContext):
         return
 
     # --- Content Parsing and Handling ---
-    channel_username, channel_source_type, direct_rss_url, html_rss_links = await _parse_message_content(update, context)
+    try:
+        channel_username, channel_source_type, direct_rss_url, html_rss_links = await _parse_message_content(update, context)
 
-    # Route to appropriate handler based on parsed content
-    if channel_username:
-        await _handle_telegram_channel(update, context, channel_username, channel_source_type)
-    elif direct_rss_url:
-        await _handle_direct_rss(update, context, direct_rss_url)
-    elif html_rss_links:
-        await _handle_html_rss_links(update, context, html_rss_links)
-    else:
-        # Handle cases where parsing returned nothing or indicated an error handled within _parse_message_content
-        # Also handles messages that weren't forwards, links, or URLs.
-        # We call _handle_unknown_message which includes logic for URLs that weren't valid RSS/HTML.
-        await _handle_unknown_message(update, context)
+        # Route to appropriate handler based on parsed content
+        if channel_username:
+            try:
+                await _handle_telegram_channel(update, context, channel_username, channel_source_type)
+            except Exception as e:
+                logging.error(f"Error processing telegram channel {channel_username}: {e}", exc_info=True)
+                # Check if it's a TelegramError related to rate limits
+                if hasattr(e, "__class__") and e.__class__.__name__ == "TelegramError" and "rate limit" in str(e).lower():
+                    await update.message.reply_text(f"Telegram API rate limit exceeded. Please try again later.")
+                else:
+                    await update.message.reply_text(f"Error processing telegram channel @{channel_username}: {str(e)}")
+        elif direct_rss_url:
+            try:
+                await _handle_direct_rss(update, context, direct_rss_url)
+            except Exception as e:
+                logging.error(f"Error processing RSS feed {direct_rss_url}: {e}", exc_info=True)
+                await update.message.reply_text(f"Error processing RSS feed: {str(e)}")
+        elif html_rss_links:
+            try:
+                await _handle_html_rss_links(update, context, html_rss_links)
+            except Exception as e:
+                logging.error(f"Error processing website with RSS links: {e}", exc_info=True)
+                await update.message.reply_text(f"Error processing website with RSS links: {str(e)}")
+        else:
+            # Handle cases where parsing returned nothing or indicated an error handled within _parse_message_content
+            # Also handles messages that weren't forwards, links, or URLs.
+            # We call _handle_unknown_message which includes logic for URLs that weren't valid RSS/HTML.
+            await _handle_unknown_message(update, context)
+    except Exception as e:
+        logging.error(f"Error parsing message content: {e}", exc_info=True)
+        # Provide user-friendly error message
+        await update.message.reply_text(f"Error processing your message: {str(e)}")
 
 async def _handle_flag_toggle(query, context: CallbackContext, action: str, flag: str, channel_name: str):
     """Handles the logic for adding or removing a flag based on button press."""
