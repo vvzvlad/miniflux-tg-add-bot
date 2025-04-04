@@ -894,10 +894,14 @@ async def button_callback(update: Update, context: CallbackContext):
             logging.error(f"Unexpected error while subscribing to feed '{feed_url}': {str(error)}", exc_info=True)
             await query.edit_message_text(f"Unexpected error while subscribing to RSS feed: {str(error)}")
 
-    # Refactored flag handling
-    elif data.startswith("flag_"):
+    # Refactored flag handling - FIX: Adjust parsing logic
+    elif data.startswith("add_flag|") or data.startswith("remove_flag|"):
         try:
-            _, action, flag, channel_name = data.split("_", 3) # flag includes #
+            # FIX: Use '|' as separator and parse action, channel_name, flag
+            action_part, channel_name, flag = data.split("|", 2) 
+            # Extract action ('add' or 'remove') from action_part
+            action = action_part.split("_")[0] # 'add_flag' -> 'add', 'remove_flag' -> 'remove'
+            
             # Pass control to the dedicated handler
             await _handle_flag_toggle(query, context, action, flag, channel_name)
         except ValueError as e:

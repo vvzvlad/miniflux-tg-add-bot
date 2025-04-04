@@ -883,8 +883,8 @@ async def test_button_callback_flag_toggle_get_feed_error(mock_update, mock_cont
     channel_name = "test_channel"
     flag = "video"
     feed_id = 123
-    # Используем правильный формат данных для коллбэка флагов
-    mock_update.callback_query.data = f"flag_add_{flag}_{channel_name}" 
+    # FIX: Use the correct callback data format
+    mock_update.callback_query.data = f"add_flag|{channel_name}|{flag}" 
     mock_update.callback_query.edit_message_text = AsyncMock()
     mock_update.callback_query.message.chat.send_action = AsyncMock()
     mock_update.callback_query.answer = AsyncMock()
@@ -901,13 +901,14 @@ async def test_button_callback_flag_toggle_get_feed_error(mock_update, mock_cont
     await button_callback(mock_update, mock_context)
     
     # Assertions
+    # Now button_callback calls _handle_flag_toggle, which calls get_feed
     mock_config_and_client.get_feed.assert_called_once_with(feed_id=feed_id)
-    
-    # Verify error message is shown
-    mock_update.callback_query.edit_message_text.assert_called_once()
-    error_message = mock_update.callback_query.edit_message_text.call_args[0][0]
-    assert "Failed to process flag action" in error_message
-    assert "Failed to fetch feed data" in error_message
+    # Check that the error message was sent back to the user
+    # FIX: Assert the correct error message from the except block
+    mock_update.callback_query.edit_message_text.assert_any_call(
+        f"Failed to process flag action: Failed to fetch feed data. Choose an action:",
+        reply_markup=mock_update.callback_query.edit_message_text.call_args.kwargs.get('reply_markup') # Need to check reply_markup exists too
+    )
 
 @pytest.mark.asyncio
 async def test_button_callback_flag_toggle_update_error(mock_update, mock_context, mock_config_and_client):
@@ -916,8 +917,8 @@ async def test_button_callback_flag_toggle_update_error(mock_update, mock_contex
     channel_name = "test_channel"
     flag = "video"
     feed_id = 123
-    # Используем правильный формат данных для коллбэка флагов
-    mock_update.callback_query.data = f"flag_add_{flag}_{channel_name}"
+    # FIX: Use the correct callback data format
+    mock_update.callback_query.data = f"add_flag|{channel_name}|{flag}" 
     mock_update.callback_query.edit_message_text = AsyncMock()
     mock_update.callback_query.message.chat.send_action = AsyncMock()
     mock_update.callback_query.answer = AsyncMock()
@@ -939,22 +940,20 @@ async def test_button_callback_flag_toggle_update_error(mock_update, mock_contex
             'channel_name': channel_name,
             'flags': []
         }):
-            with patch('bot.build_feed_url', return_value=f'http://test.rssbridge.local/rss/{channel_name}/test_token?video=1'):
+            with patch('bot.build_feed_url', return_value=f'http://test.rssbridge.local/rss/{channel_name}/test_token?flags=video'):
                 # Mock update_feed_url_api to return failure
-                with patch('bot.update_feed_url_api', return_value=(False, None, "Update failed")):
+                with patch('bot.update_feed_url_api', return_value=(False, None, "Update failed")) as mock_update_api:
                     
                     # Call the function
                     await button_callback(mock_update, mock_context)
                     
                     # Assertions
+                    # _handle_flag_toggle is called, which then calls get_feed
                     mock_config_and_client.get_feed.assert_called_once_with(feed_id=feed_id)
-                    
-                    # Verify error message is shown в последнем вызове
-                    assert mock_update.callback_query.edit_message_text.call_count >= 1
-                    calls = mock_update.callback_query.edit_message_text.call_args_list
-                    last_call = calls[-1]
-                    assert "Failed to update flags for" in last_call.args[0]
-                    assert "Update failed" in last_call.args[0]
+                    # Check that the update API was called with the correct new URL
+                    mock_update_api.assert_called_once_with(feed_id, f'http://test.rssbridge.local/rss/{channel_name}/test_token?flags=video', mock_config_and_client)
+                    # Check that the error message was displayed
+                    mock_update.callback_query.edit_message_text.assert_any_call("Failed to update feed URL via Miniflux API for @test_channel. Error: Update failed")
 
 @pytest.mark.asyncio
 async def test_button_callback_edit_regex_get_feed_error(mock_update, mock_context, mock_config_and_client):

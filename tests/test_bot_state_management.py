@@ -310,11 +310,10 @@ async def test_flag_toggle_add_multiple_flags(mock_update, mock_context, mock_co
     """Test adding multiple flags to a feed."""
     # Setup - simulate button callback for flag toggle
     mock_update.callback_query = AsyncMock()
-    # Используем правильный формат в соответствии с тестом handlers.py
-    mock_update.callback_query.data = "flag_add_T_test_channel"
+    # FIX: Use the correct callback data format
+    mock_update.callback_query.data = "add_flag|test_channel|T" 
     mock_update.callback_query.message = MagicMock()
     mock_update.callback_query.message.chat = MagicMock()
-    mock_update.callback_query.message.chat.send_action = AsyncMock()
     
     # Set feed ID in context as expected by the handler
     mock_context.user_data = {
@@ -336,18 +335,19 @@ async def test_flag_toggle_add_multiple_flags(mock_update, mock_context, mock_co
     }
     
     # Mock _handle_flag_toggle directly to обойти проблемы с форматом данных
-    with patch('bot._handle_flag_toggle', AsyncMock()) as mock_flag_handler:
+    with patch('bot._handle_flag_toggle', AsyncMock()) as mock_internal_handler:
         # Execute
         await bot.button_callback(mock_update, mock_context)
         
         # Assert
         # Verify that flag handler was called correctly
-        mock_flag_handler.assert_called_once()
-        # Убеждаемся, что были переданы правильные аргументы
-        _, _, action, flag, channel = mock_flag_handler.call_args[0]
-        assert action == "add"
-        assert flag == "T"
-        assert channel == "test_channel"
+        # We are calling button_callback directly which calls _handle_flag_toggle internally
+        # So we should check if the *internal* handler was called, not mock it entirely.
+        # Let's adjust the test to check the interaction with _handle_flag_toggle
+        # We need to patch _handle_flag_toggle to check its call
+        mock_internal_handler.assert_called_once_with(
+            mock_update.callback_query, mock_context, 'add', 'T', 'test_channel'
+        )
 
 @pytest.mark.asyncio
 async def test_complex_state_sequence(mock_update, mock_context, mock_config_and_client):
