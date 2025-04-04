@@ -192,7 +192,7 @@ async def _handle_awaiting_regex(update: Update, context: CallbackContext):
         logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
 
         # Update the feed URL using the existing API function
-        success, _updated_url_from_miniflux, error_message = await update_feed_url_api(feed_id, new_url, miniflux_client)
+        success, _updated_url_from_miniflux, error_message = update_feed_url_api(feed_id, new_url, miniflux_client)
 
         if success:
             if remove_regex or not regex_to_store:
@@ -318,7 +318,7 @@ async def _handle_awaiting_merge_time(update: Update, context: CallbackContext):
         logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
 
         # Update the feed URL
-        success, _updated_url_from_miniflux, error_message = await update_feed_url_api(feed_id, new_url, miniflux_client)
+        success, _updated_url_from_miniflux, error_message = update_feed_url_api(feed_id, new_url, miniflux_client)
 
         if success:
             if new_merge_seconds_to_set is None:
@@ -708,7 +708,7 @@ async def _handle_flag_toggle(query, context: CallbackContext, action: str, flag
         logging.info(f"Attempting flag update. Old flags: {current_flags}, New flags: {new_flags}. Target URL: {new_url}")
 
         # Update feed URL via API
-        success, updated_url_from_api, error_message = await update_feed_url_api(feed_id, new_url, miniflux_client)
+        success, updated_url_from_api, error_message = update_feed_url_api(feed_id, new_url, miniflux_client)
 
         if not success:
             # Восстанавливаем отправку клавиатуры при ошибке
