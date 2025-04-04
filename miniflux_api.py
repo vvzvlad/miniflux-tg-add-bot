@@ -41,10 +41,10 @@ def check_feed_exists(client, feed_url):
         )
         raise
 
-async def update_feed_url(feed_id: int, new_url: str, client) -> tuple[bool, str | None, str | None]:
+def update_feed_url(feed_id: int, new_url: str, client) -> tuple[bool, str | None, str | None]:
     """Updates the URL for a specific feed."""
     try:
-        await client.update_feed(feed_id, feed_url=new_url)
+        client.update_feed(feed_id, feed_url=new_url)
         logging.info(f"Successfully updated feed URL for feed ID {feed_id} to: {new_url}")
         return True, new_url, None
     except (ClientError, ServerError) as error:
