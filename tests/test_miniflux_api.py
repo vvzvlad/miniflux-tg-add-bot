@@ -54,8 +54,8 @@ def mock_miniflux_client():
     client.get_categories = MagicMock()
     client.get_feeds = MagicMock()
     client.get_feed = MagicMock()
-    client.update_feed = AsyncMock()
-    client.delete_feed = AsyncMock()
+    client.update_feed = MagicMock()
+    client.delete_feed = MagicMock()
     return client
 
 @pytest.fixture
@@ -150,64 +150,61 @@ def test_check_feed_exists_server_error(mock_miniflux_client, mock_response):
         check_feed_exists(mock_miniflux_client, "http://some.url")
     mock_miniflux_client.get_feeds.assert_called_once()
 
-# --- Tests for update_feed_url --- 
+# --- Tests for update_feed_url ---
 
-@pytest.mark.asyncio
-async def test_update_feed_url_success(mock_miniflux_client):
+def test_update_feed_url_success(mock_miniflux_client):
     """Test update_feed_url successfully calls client.update_feed."""
     feed_id = 123
     new_url = "http://new.url/feed"
-    mock_miniflux_client.update_feed.return_value = None
-    success, returned_url, error_msg = await update_feed_url(feed_id, new_url, mock_miniflux_client)
+    # Since it's synchronous now, the mock doesn't need a return value if no exception is raised
+    mock_miniflux_client.update_feed.side_effect = None 
+    success, returned_url, error_msg = update_feed_url(feed_id, new_url, mock_miniflux_client)
     assert success is True
     assert returned_url == new_url
     assert error_msg is None
     mock_miniflux_client.update_feed.assert_called_once_with(feed_id, feed_url=new_url)
 
-@pytest.mark.asyncio
-async def test_update_feed_url_client_error(mock_miniflux_client, mock_response):
+def test_update_feed_url_client_error(mock_miniflux_client, mock_response):
     """Test update_feed_url handles ClientError."""
     feed_id = 124
     new_url = "http://bad.url/feed"
     mock_response.status_code = 400
     error_reason = "Invalid URL format from API"
     mock_response.json.return_value = {"error_message": error_reason}
-    api_error = ClientError(error_reason)  # Используем строку вместо объекта
+    api_error = ClientError(error_reason) # Use string instead of object for simpler mock
     mock_miniflux_client.update_feed.side_effect = api_error
-    
-    success, returned_url, error_msg = await update_feed_url(feed_id, new_url, mock_miniflux_client)
-    
+
+    success, returned_url, error_msg = update_feed_url(feed_id, new_url, mock_miniflux_client)
+
     assert success is False
     assert returned_url is None
-    assert error_reason in str(error_msg)  # Преобразуем error_msg в строку для сравнения
+    assert error_reason in str(error_msg) # Convert error_msg to string for comparison
 
-@pytest.mark.asyncio
-async def test_update_feed_url_server_error(mock_miniflux_client, mock_response):
+def test_update_feed_url_server_error(mock_miniflux_client, mock_response):
     """Test update_feed_url handles ServerError."""
     feed_id = 125
     new_url = "http://server.error/feed"
     mock_response.status_code = 500
     error_reason = "Internal Server Error"
     mock_response.json.return_value = {"error_message": error_reason}
-    server_error = ServerError(error_reason)  # Используем строку вместо объекта
+    server_error = ServerError(error_reason) # Use string instead of object for simpler mock
     mock_miniflux_client.update_feed.side_effect = server_error
-    
-    success, returned_url, error_msg = await update_feed_url(feed_id, new_url, mock_miniflux_client)
-    
+
+    success, returned_url, error_msg = update_feed_url(feed_id, new_url, mock_miniflux_client)
+
     assert success is False
     assert returned_url is None
-    assert error_reason in str(error_msg)  # Преобразуем error_msg в строку для сравнения
+    assert error_reason in str(error_msg) # Convert error_msg to string for comparison
 
-@pytest.mark.asyncio
-async def test_update_feed_url_generic_error(mock_miniflux_client):
+def test_update_feed_url_generic_error(mock_miniflux_client):
     """Test update_feed_url handles generic errors."""
     feed_id = 126
     new_url = "http://generic.error/feed"
     generic_error = Exception("Unexpected error occurred")
     mock_miniflux_client.update_feed.side_effect = generic_error
-    
-    success, returned_url, error_msg = await update_feed_url(feed_id, new_url, mock_miniflux_client)
-    
+
+    success, returned_url, error_msg = update_feed_url(feed_id, new_url, mock_miniflux_client)
+
     assert success is False
     assert returned_url is None
     assert "Unexpected error occurred" in error_msg
@@ -549,8 +546,7 @@ def test_delete_feed_no_permission(mock_client_class):
 # Tests for update_feed_url_api per test plan section 5.2
 
 @patch('miniflux.Client')
-@pytest.mark.asyncio
-async def test_update_feed_url_invalid_regex(mock_client_class):
+def test_update_feed_url_invalid_regex(mock_client_class):
     """Test update_feed_url with invalid regex parameter."""
     # Setup mock client
     mock_client = MagicMock()
@@ -560,13 +556,13 @@ async def test_update_feed_url_invalid_regex(mock_client_class):
     feed_id = 200
     new_url = "http://example.com/feed?exclude_text=(invalid"
     error_msg = "Invalid regex pattern"
-    
-    # Используем AsyncMock вместо MagicMock для асинхронных методов
-    mock_client.update_feed = AsyncMock(side_effect=ClientError(error_msg, status_code=400))
-    
+
+    # Use MagicMock for synchronous methods
+    mock_client.update_feed = MagicMock(side_effect=ClientError(error_msg, status_code=400))
+
     # Call update_feed_url function directly
-    success, returned_url, err_msg = await update_feed_url(feed_id, new_url, mock_client)
-    
+    success, returned_url, err_msg = update_feed_url(feed_id, new_url, mock_client)
+
     # Assertions
     assert success is False
     assert returned_url is None
@@ -574,34 +570,33 @@ async def test_update_feed_url_invalid_regex(mock_client_class):
     mock_client.update_feed.assert_called_once_with(feed_id, feed_url=new_url)
 
 @patch('miniflux.Client')
-@pytest.mark.asyncio
-async def test_update_feed_url_no_matches(mock_client_class):
+def test_update_feed_url_no_matches(mock_client_class):
     """Test update_feed_url_api with valid regex but no matches found."""
     import miniflux_api
     from miniflux_api import update_feed_url
-    
+
     # Create a mock client instance
     mock_client = MagicMock()
     mock_client_class.return_value = mock_client
-    
+
     # Get current feed URL
     current_url = "http://rssbridge.example.com/?action=display&bridge=Telegram&channel=test_channel"
     mock_client.get_feed = MagicMock(return_value={"feed_url": current_url})
-    mock_client.update_feed = AsyncMock()
-    
+    mock_client.update_feed = MagicMock() # Use MagicMock for synchronous
+
     # Call update_feed_url with a new URL that would cause no change
-    success, updated_url, error_message = await update_feed_url(
-        42, 
+    success, updated_url, error_message = update_feed_url(
+        42,
         current_url,
         mock_client
     )
-    
-    # Verify result - should be successful but with a note
+
+    # Verify result - should be successful
     assert success is True
     assert updated_url == current_url
     assert error_message is None
-    
-    # Проверяем, что update_feed был вызван (так как функция всегда вызывает update_feed)
+
+    # Verify that update_feed was called
     mock_client.update_feed.assert_called_once_with(42, feed_url=current_url)
 
 # Tests for category functions per test plan section 5.3

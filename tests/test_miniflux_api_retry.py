@@ -30,41 +30,36 @@ def mock_client():
     return mock
 
 # Tests for retry behavior in update_feed_url
-@pytest.mark.asyncio
-async def test_update_feed_url_retries_on_server_error(mock_client):
-    """Test that update_feed_url properly handles server errors."""
+def test_update_feed_url_retries_on_server_error(mock_client):
+    """Test that update_feed_url properly handles server errors (no retry expected)."""
     feed_id = 123
     new_url = "https://example.com/rss/test_channel?flags=FT"
     
-    # Set up to fail with server error on first call, then succeed on second call
-    mock_client.update_feed = AsyncMock()
-    mock_client.update_feed.side_effect = [
-        ServerError(MockResponse(status_code=500, message="Internal Server Error")),
-        None  # Success on second call
-    ]
+    # Set up to fail with server error
+    mock_client.update_feed = MagicMock() # Use MagicMock for synchronous
+    mock_client.update_feed.side_effect = ServerError(MockResponse(status_code=500, message="Internal Server Error"))
     
-    # Execute with mock that will fail once then succeed
-    success, updated_url, error_message = await update_feed_url(feed_id, new_url, mock_client)
+    # Execute
+    success, updated_url, error_message = update_feed_url(feed_id, new_url, mock_client)
     
     # Assert
     assert success is False
     assert updated_url is None
     assert "500" in error_message
     assert "Internal Server Error" in error_message
-    assert mock_client.update_feed.call_count == 1  # Should only try once, no automatic retry
+    assert mock_client.update_feed.call_count == 1 # Function should try once and return error
 
-@pytest.mark.asyncio
-async def test_update_feed_url_handles_client_error(mock_client):
+def test_update_feed_url_handles_client_error(mock_client):
     """Test that update_feed_url properly handles client errors."""
     feed_id = 123
     new_url = "https://example.com/rss/test_channel?flags=FT"
     
     # Set up to fail with client error
-    mock_client.update_feed = AsyncMock()
+    mock_client.update_feed = MagicMock() # Use MagicMock for synchronous
     mock_client.update_feed.side_effect = ClientError(MockResponse(status_code=400, message="Bad Request"))
     
     # Execute
-    success, updated_url, error_message = await update_feed_url(feed_id, new_url, mock_client)
+    success, updated_url, error_message = update_feed_url(feed_id, new_url, mock_client)
     
     # Assert
     assert success is False
@@ -73,18 +68,17 @@ async def test_update_feed_url_handles_client_error(mock_client):
     assert "Bad Request" in error_message
     assert mock_client.update_feed.call_count == 1
 
-@pytest.mark.asyncio
-async def test_update_feed_url_handles_unexpected_exception(mock_client):
+def test_update_feed_url_handles_unexpected_exception(mock_client):
     """Test that update_feed_url handles unexpected exceptions."""
     feed_id = 123
     new_url = "https://example.com/rss/test_channel?flags=FT"
     
     # Set up to raise unexpected exception
-    mock_client.update_feed = AsyncMock()
+    mock_client.update_feed = MagicMock() # Use MagicMock for synchronous
     mock_client.update_feed.side_effect = Exception("Unexpected error")
     
     # Execute
-    success, updated_url, error_message = await update_feed_url(feed_id, new_url, mock_client)
+    success, updated_url, error_message = update_feed_url(feed_id, new_url, mock_client)
     
     # Assert
     assert success is False
