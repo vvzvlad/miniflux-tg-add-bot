@@ -204,48 +204,6 @@ async def test_button_callback_delete_feed_execute_error(mock_update, mock_conte
         mock_update.callback_query.answer.assert_called_once()
         assert mock_config_and_client.delete_feed.called
 
-# Тест обработки ошибок базы данных упрощен, чтобы не зависеть от внутренней реализации
-@pytest.mark.asyncio
-async def test_get_channel_by_id_error():
-    """Test error handling for database operations."""
-    # Тест перенаправлен на другой тестовый набор
-    # Мы не можем протестировать это напрямую через handle_message из-за сложности моков
-    pytest.skip("Tested in test_channel_management.py")
+# Test for initialization errors (skipped test removed)
 
-@pytest.mark.asyncio
-async def test_add_channel_error():
-    """Test error handling when create_channel fails."""
-    # Тест перенаправлен на другой тестовый набор
-    pytest.skip("Tested in test_channel_management.py")
-
-# Упрощенный тест для проверки обработки ошибок API
-@pytest.mark.asyncio
-async def test_fetch_categories_error():
-    """Test error handling when fetch_categories fails."""
-    # Тестируем только обработку ошибок в miniflux_api.py через прямой вызов
-    with patch('bot.logging') as mock_logging:
-        # Прямой вызов функции error_handler в miniflux_api.py
-        pytest.skip("API error handling is tested in test_miniflux_api.py")
-
-@pytest.mark.asyncio
-async def test_get_feeds_error():
-    """Test error handling when get_feeds fails."""
-    # Тестируем только обработку ошибок в miniflux_api.py через прямой вызов
-    pytest.skip("API error handling is tested in test_miniflux_api.py")
-
-# Test for initialization errors
-@pytest.mark.asyncio
-async def test_post_init_set_my_commands_error():
-    """Test error handling when set_my_commands fails."""
-    # Этот тест отмечен как пропущенный, так как функция post_init отсутствует
-    pytest.skip("Function 'post_init' not available for testing")
-
-# Тесты main пропускаем, так как они требуют большой переделки под тестирование
-# и не являются приоритетными для этого набора тестов
-def test_main_no_miniflux_client():
-    """Test main() exits when miniflux_client is None."""
-    pytest.skip("Main function tests require complex mocking of telegram.ext.Application")
-
-def test_main_no_telegram_token():
-    """Test main() exits when TELEGRAM_TOKEN is None."""
-    pytest.skip("Main function tests require complex mocking of telegram.ext.Application") 
+# Tests for main function (skipped tests removed) 
