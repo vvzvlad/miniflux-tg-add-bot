@@ -1558,3 +1558,122 @@ async def test_message_editing(mock_update, mock_context, mock_config_and_client
         assert True  # If we get here without exception, test passes
     except Exception as e:
         pytest.fail(f"handle_message raised exception with edited message: {e}")
+
+@pytest.mark.asyncio
+async def test_button_callback_category_selection_with_direct_rss(mock_update, mock_context, mock_config_and_client):
+    """Test category selection button callback with direct RSS URL."""
+    # Установка данных
+    mock_update.callback_query.data = "cat_42"  # ID категории
+    mock_update.callback_query.answer = AsyncMock()
+    mock_update.callback_query.edit_message_text = AsyncMock()
+    mock_update.callback_query.message.chat.send_action = AsyncMock()
+    mock_update.callback_query.from_user.username = "test_admin"
+    
+    # Устанавливаем RSS URL в контексте
+    direct_rss_url = "https://example.com/feed.xml"
+    mock_context.user_data = {
+        "direct_rss_url": direct_rss_url,
+        "categories": {42: "News Category"}
+    }
+    
+    # Настраиваем успешный ответ для create_feed
+    mock_config_and_client.create_feed.return_value = None
+    
+    # Вызываем функцию
+    await button_callback(mock_update, mock_context)
+    
+    # Проверяем результаты
+    mock_update.callback_query.answer.assert_called_once()
+    mock_update.callback_query.message.chat.send_action.assert_called_once_with("typing")
+    mock_config_and_client.create_feed.assert_called_once_with(direct_rss_url, category_id=42)
+    mock_update.callback_query.edit_message_text.assert_called_once()
+    
+    # Проверяем содержимое сообщения
+    message_text = mock_update.callback_query.edit_message_text.call_args[0][0]
+    assert "Direct RSS feed" in message_text
+    assert "News Category" in message_text
+    
+    # Проверяем, что URL был удален из контекста
+    assert "direct_rss_url" not in mock_context.user_data
+
+@pytest.mark.asyncio
+async def test_button_callback_category_selection_with_channel(mock_update, mock_context, mock_config_and_client):
+    """Test category selection button callback with Telegram channel."""
+    # Установка данных
+    mock_update.callback_query.data = "cat_24"  # ID категории
+    mock_update.callback_query.answer = AsyncMock()
+    mock_update.callback_query.edit_message_text = AsyncMock()
+    mock_update.callback_query.message.chat.send_action = AsyncMock()
+    mock_update.callback_query.from_user.username = "test_admin"
+    
+    # Устанавливаем RSS URL в контексте
+    channel_name = "test_channel"
+    mock_context.user_data = {
+        "channel_title": channel_name,
+        "categories": {24: "Telegram Channels"}
+    }
+    
+    # Настраиваем успешный ответ для create_feed
+    mock_config_and_client.create_feed.return_value = None
+    
+    # Вызываем функцию
+    await button_callback(mock_update, mock_context)
+    
+    # Проверяем результаты
+    mock_update.callback_query.answer.assert_called_once()
+    mock_update.callback_query.message.chat.send_action.assert_called_once_with("typing")
+    
+    # Проверяем, что feed_url был построен корректно
+    create_feed_call_args = mock_config_and_client.create_feed.call_args[0]
+    assert channel_name in create_feed_call_args[0]  # Проверяем, что имя канала содержится в URL
+    assert mock_config_and_client.create_feed.call_args[1]["category_id"] == 24
+    
+    # Проверяем сообщение
+    message_text = mock_update.callback_query.edit_message_text.call_args[0][0]
+    assert f"Channel @{channel_name}" in message_text
+    assert "Telegram Channels" in message_text
+    
+    # Проверяем, что channel_title был удален из контекста
+    assert "channel_title" not in mock_context.user_data
+
+@pytest.mark.asyncio
+async def test_button_callback_category_selection_api_error(mock_update, mock_context, mock_config_and_client):
+    """Test category selection button callback when API returns error."""
+    # Установка данных
+    mock_update.callback_query.data = "cat_24"
+    mock_update.callback_query.answer = AsyncMock()
+    mock_update.callback_query.edit_message_text = AsyncMock()
+    mock_update.callback_query.message.chat.send_action = AsyncMock()
+    mock_update.callback_query.from_user.username = "test_admin"
+    
+    # Устанавливаем данные в контексте
+    channel_name = "error_channel"
+    mock_context.user_data = {
+        "channel_title": channel_name,
+        "categories": {24: "Telegram Channels"}
+    }
+    
+    # Создаем мок-объект response для ClientError
+    mock_response = MagicMock()
+    mock_response.status_code = 400
+    # Настраиваем метод json() для возврата данных об ошибке
+    mock_response.json.return_value = {"error_message": "Feed already exists"}
+    
+    # Создаем объект ClientError с мок-объектом response
+    api_error = ClientError(mock_response)
+    
+    # Настраиваем вызов create_feed для выброса исключения
+    mock_config_and_client.create_feed.side_effect = api_error
+    
+    # Вызываем функцию
+    await button_callback(mock_update, mock_context)
+    
+    # Проверяем результаты
+    mock_update.callback_query.answer.assert_called_once()
+    mock_update.callback_query.message.chat.send_action.assert_called_once_with("typing")
+    
+    # Проверяем сообщение об ошибке
+    error_message = mock_update.callback_query.edit_message_text.call_args[0][0]
+    assert "Failed to subscribe" in error_message
+    assert "400" in error_message
+    assert "Feed already exists" in error_message
