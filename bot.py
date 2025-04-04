@@ -464,6 +464,10 @@ async def _handle_telegram_channel(update: Update, context: CallbackContext, cha
                 current_flags = [] # Default to empty list on error
                 current_merge_seconds = None # Reset on error
 
+            # FIX: Store feed_id in user_data for flag operations
+            context.user_data[f'feed_id_for_{channel_username}'] = feed_id
+            logging.debug(f"Stored feed_id {feed_id} in context for channel {channel_username}")
+
             # Pass merge time to keyboard function
             keyboard = create_flag_keyboard(channel_username, current_flags, current_merge_seconds)
             reply_markup = InlineKeyboardMarkup(keyboard)
