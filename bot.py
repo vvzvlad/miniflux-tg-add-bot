@@ -680,7 +680,7 @@ async def _handle_flag_toggle(query, context: CallbackContext, action: str, flag
                 await query.edit_message_text(f"Flag '{flag}' is already set for channel @{channel_name}. Choose an action:", reply_markup=reply_markup)
                 return
             new_flags.append(flag)
-            success_message_part = f"Flag {flag} added"
+            success_message_part = f"Flag '{flag}' added"
         elif action == "remove":
             if flag not in new_flags:
                 await query.edit_message_text(f"Flag '{flag}' is not set for channel @{channel_name}.")
@@ -690,7 +690,7 @@ async def _handle_flag_toggle(query, context: CallbackContext, action: str, flag
                 await query.edit_message_text(f"Flag '{flag}' is not set for channel @{channel_name}. Choose an action:", reply_markup=reply_markup)
                 return
             new_flags = [f for f in new_flags if f != flag]
-            success_message_part = f"Flag {flag} removed"
+            success_message_part = f"Flag '{flag}' removed"
         else:
             logging.error(f"Unknown flag action '{action}' requested.")
             await query.edit_message_text("Internal error: Unknown flag action.")
@@ -722,13 +722,13 @@ async def _handle_flag_toggle(query, context: CallbackContext, action: str, flag
         final_flags = new_flags
         final_merge_seconds = parsed_data.get("merge_seconds")
         flags_display = " ".join(final_flags) if final_flags else "none"
-        message = f"{success_message_part} for channel @{channel_name}.\nCurrent flags: {flags_display}"
+        message = f"{success_message_part} for channel @{channel_name}.Current flags: {flags_display}"
 
         # Восстанавливаем отправку клавиатуры при успехе
         keyboard = create_flag_keyboard(channel_name, final_flags, final_merge_seconds)
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            f"{message}\n\nChoose an action:",
+            f"{message}\nChoose an action:",
             reply_markup=reply_markup
         )
 
