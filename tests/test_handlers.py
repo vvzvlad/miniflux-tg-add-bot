@@ -402,7 +402,8 @@ async def test_handle_flag_toggle_add(mock_update, mock_context, mock_config_and
                     mock_create_keyboard.assert_called_once() 
                     mock_query.edit_message_text.assert_called_once()
                     call_args, _ = mock_query.edit_message_text.call_args
-                    assert f"Flag {flag_to_add} added" in call_args[0]
+                    # Expect single quotes around the flag in the message
+                    assert f"Flag '{flag_to_add}' added" in call_args[0]
                     assert "Choose an action:" in call_args[0]
 
 @pytest.mark.asyncio
@@ -441,7 +442,8 @@ async def test_handle_flag_toggle_remove(mock_update, mock_context, mock_config_
                     mock_create_keyboard.assert_called_once()
                     mock_query.edit_message_text.assert_called_once()
                     call_args, _ = mock_query.edit_message_text.call_args
-                    assert f"Flag {flag_to_remove} removed" in call_args[0]
+                    # Expect single quotes around the flag in the message
+                    assert f"Flag '{flag_to_remove}' removed" in call_args[0]
                     assert "Choose an action:" in call_args[0]
 
 # --- Tests for State Handling (Regex Editing) ---

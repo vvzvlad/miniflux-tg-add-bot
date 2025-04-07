@@ -21,9 +21,12 @@ def parse_telegram_link(text: str) -> str | None:
     # Regex to find t.me URLs
     # Handles optional https://, t.me domain, channel name (alphanumeric/underscore) or numeric ID (with optional minus), message ID (numeric)
     # Updated to also match links without a message ID (e.g., https://t.me/channelname)
-    match = re.search(r"(?:https?://)?t\\.me/([-]?\\d+|[a-zA-Z0-9_]+)(?:/\\d+)?", text)
+    # Make stricter: anchor to start/end, allow optional trailing slash, handle optional https:// correctly
+    match = re.search(r"^(?:https?://)?t\.me/([-]?\d+|[a-zA-Z0-9_]+)(?:/\d+)?/?$", text)
 
     if match:
+        # If matched without protocol, channel name is group 1
+        # If matched with protocol, channel name is still group 1
         channel_name = match.group(1)
         logging.info(f"Parsed Telegram link: channel='{channel_name}'")
         return channel_name

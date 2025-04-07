@@ -977,9 +977,6 @@ async def button_callback(update: Update, context: CallbackContext):
                         # Get URL from the initially found feed or re-fetch
                         feed_url = feed_url_check # Use the URL we already have
                         logging.info(f"Found current feed URL for {channel_name} (ID: {feed_id}): {feed_url}")
-                        # Optional: re-fetch if staleness is a concern
-                        # updated_target_feed = miniflux_client.get_feed(feed_id)
-                        # feed_url = updated_target_feed.get("feed_url", "")
                     except Exception as fetch_error:
                         # This block might only be needed if re-fetching above
                         logging.error(f"Failed to fetch feed details for {feed_id} ({channel_name}) during regex edit prep: {fetch_error}")
@@ -1061,9 +1058,6 @@ async def button_callback(update: Update, context: CallbackContext):
                     try:
                         feed_url = feed_url_check # Use URL from initial find
                         logging.info(f"Found current feed URL for {channel_name} (ID: {feed_id}): {feed_url}")
-                        # Optional re-fetch:
-                        # updated_target_feed = miniflux_client.get_feed(feed_id)
-                        # feed_url = updated_target_feed.get("feed_url", "")
                     except Exception as fetch_error:
                         # Only needed if re-fetching
                         logging.error(f"Failed to fetch feed details for {feed_id} ({channel_name}) during merge time edit prep: {fetch_error}")
