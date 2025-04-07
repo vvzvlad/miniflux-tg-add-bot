@@ -371,6 +371,7 @@ async def _parse_message_content(update: Update, context: CallbackContext):
         logging.info(f"Processing forwarded message from channel: {forward_chat.get('username') or forward_chat.get('id')}")
         # Use the imported function for channel acceptance check
         accept_no_username = should_accept_channels_without_username()
+        logging.info(f"Value of ACCEPT_CHANNELS_WITHOUT_USERNAME: {accept_no_username}")
         if not forward_chat.get("username") and not accept_no_username:
             logging.error(f"Channel {forward_chat['title']} has no username and ACCEPT_CHANNELS_WITHOUT_USERNAME is false.")
             await update.message.reply_text("Error: channel must have a public username to subscribe. \nUse env ACCEPT_CHANNELS_WITHOUT_USERNAME=true to accept channels without username (needs support from RSS bridge).")
@@ -1163,6 +1164,14 @@ def main():
     """
     Initialize the Telegram bot and register handlers.
     """
+    # Log configuration variables at startup
+    logging.info("--- Configuration Settings ---")
+    logging.info(f"MINIFLUX_BASE_URL: {MINIFLUX_BASE_URL}")
+    logging.info(f"TELEGRAM_TOKEN is set: {bool(TELEGRAM_TOKEN)}") # Log presence, not the token itself
+    logging.info(f"RSS_BRIDGE_URL: {RSS_BRIDGE_URL}")
+    logging.info(f"ACCEPT_CHANNELS_WITHOUT_USERNAME: {should_accept_channels_without_username()}")
+    logging.info("----------------------------")
+    
     # Check if config loading/client initialization failed - moved from module level
     if miniflux_client is None or TELEGRAM_TOKEN is None:
         logging.critical("Initialization failed (check config.py logs). Exiting.")
