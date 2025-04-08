@@ -838,7 +838,7 @@ async def button_callback(update: Update, context: CallbackContext):
                 category_title = context.user_data.get("categories", {}).get(cat_id, "Unknown")
                 url_instance = MINIFLUX_BASE_URL.rstrip('/').replace('http://', '').replace('https://', '')
                 await query.edit_message_text(
-                    f"Direct RSS feed {feed_url} has been subscribed on {url_instance} instance, category '{category_title.strip()}'"
+                    f"✅ Direct RSS feed {feed_url} has been subscribed on {url_instance} instance, category '{category_title.strip()}'"
                 )
             except (ClientError, ServerError) as error:
                 status_code = getattr(error, 'status_code', 'unknown')
@@ -883,7 +883,7 @@ async def button_callback(update: Update, context: CallbackContext):
             category_title = context.user_data.get("categories", {}).get(cat_id, "Unknown")
             url_instance = MINIFLUX_BASE_URL.rstrip('/').replace('http://', '').replace('https://', '')
             await query.edit_message_text(
-                f"Channel @{channel_title} has been subscribed on {url_instance} instance, added to category '{category_title.strip()}'"
+                f"✅ Channel @{channel_title} has been subscribed on {url_instance} instance, added to category '{category_title.strip()}'"
             )
         except (ClientError, ServerError) as error:
             status_code = getattr(error, 'status_code', 'unknown')
@@ -1129,7 +1129,7 @@ def create_flag_keyboard(channel_username, current_flags, current_merge_seconds=
 
     all_flags = [
         "fwd", "video", "stream", "donat", "clown", "poo",
-        "advert", "link", "mention", "hid_channel", "foreign_channel"
+        "advert", "link", "mention", "hid_channel", "foreign_channel", "sticker"
     ]
     keyboard = []
     row = []
