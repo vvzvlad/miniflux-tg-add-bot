@@ -1005,20 +1005,34 @@ async def button_callback(update: Update, context: CallbackContext):
             context.user_data['editing_feed_id'] = feed_id
             logging.info(f"Set state to 'awaiting_regex' for channel {channel_name} (feed ID: {feed_id})")
 
+
+            regex_help = """
+a*: 0 or more, a+: 1 or more, a?: 0 or 1
+. — any character except newline
+\\s — whitespace, \\S — not whitespace
+\\d — digit, \\D — not digit
+\\w — word, \\W — not word
+[ABC] — character A, B or C, [^ABC] — not A, B or C
+            """
+
             # Use the extracted current_regex
             if current_regex:
                 # Corrected newline characters
                 prompt_message = (
                     f"Current regex for @{channel_name} is:\n{current_regex}\n\n"
-                    "Please send the new regex. Send '-' to remove the regex filter.\n"
-                    "Example: реклама|спам|сбор|подписка"
+                    "Please send the new regex. Send '-' to remove the regex filter. \n"
+                    "Example: реклама|спам|сбор\\sденег|подписка\n\n"
+                    "Regex help:\n"
+                    f"{regex_help}"
                 )
             else:
                 # Corrected newline characters
                 prompt_message = (
                     f"No current regex set for @{channel_name}.\n"
                     "Please send the new regex. Send '-' to remove the regex filter. \n"
-                    "Example: реклама|спам|сбор|подписка"
+                    "Example: реклама|спам|сбор\\sденег|подписка\n\n"
+                    "Regex help:\n"
+                    f"{regex_help}"
                 )
 
             # Removed parse_mode argument
