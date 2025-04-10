@@ -4,6 +4,7 @@ import urllib.parse
 import sys # Import sys for exit
 import re
 import asyncio
+import requests
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, CallbackContext
@@ -1125,6 +1126,62 @@ a*: 0 or more, a+: 1 or more, a?: 0 or 1
         logging.warning(f"Received unknown callback query data: {data}")
         await query.edit_message_text("Unknown action.")
 
+def fetch_available_flags(base_url):
+    """
+    Fetch the list of available flags from the RSS Bridge API.
+    
+    Args:
+        base_url: The base URL of the RSS Bridge
+        
+    Returns:
+        list: List of available flags, or default flags on failure
+    """
+    # Default flags as fallback
+    default_flags = [  "no_get_flags"  ]
+    
+    if not base_url:
+        logging.error("missing base_url for fetch_available_flags")
+        return default_flags
+    
+    try:
+        # Extract token from the RSS_BRIDGE_URL
+        # URL is expected to be in format like "https://rsshub.example.com/channel/{channel}/token" 
+        # or other format with token at the end
+        token = None
+        
+        # If URL contains {channel}, the token is likely after it
+        if "{channel}" in base_url:
+            parts = base_url.split("{channel}")
+            if len(parts) > 1 and parts[1].startswith("/"):
+                token_part = parts[1].strip("/").split("/")
+                if token_part:
+                    token = token_part[0]  # Take the first part after {channel}
+        
+        # If we couldn't extract a token, return default flags
+        if not token:
+            logging.error("could not extract token from RSS_BRIDGE_URL")
+            return default_flags
+            
+        # Construct the URL for fetching flags
+        base_without_path = base_url.split("{channel}")[0].rstrip("/")
+        flags_url = f"{base_without_path}/flags/{token}"
+        logging.info(f"fetching flags from {flags_url}")
+        
+        # Make the request
+        response = requests.get(flags_url, timeout=10)
+        
+        # Check if the request was successful
+        if response.status_code == 200:
+            flags = response.json()
+            logging.info(f"successfully fetched {len(flags)} flags from bridge")
+            return flags
+        else:
+            logging.error(f"failed to fetch flags: http status {response.status_code}")
+            return default_flags
+    except Exception as e:
+        logging.error(f"error fetching flags from bridge: {e}")
+        return default_flags
+
 def create_flag_keyboard(channel_username, current_flags, current_merge_seconds=None):
     """
     Create keyboard with flag options, showing current status (✅/❌),
@@ -1141,10 +1198,8 @@ def create_flag_keyboard(channel_username, current_flags, current_merge_seconds=
     # Ensure current_flags is a list
     current_flags = current_flags or []
 
-    all_flags = [
-        "fwd", "video", "stream", "donat", "clown", "poo",
-        "advert", "link", "mention", "hid_channel", "foreign_channel", "sticker"
-    ]
+    # Get dynamically available flags directly from the API
+    all_flags = fetch_available_flags(RSS_BRIDGE_URL)
     keyboard = []
     row = []
 
