@@ -1163,8 +1163,9 @@ def fetch_available_flags(base_url):
             return default_flags
             
         # Construct the URL for fetching flags
-        base_without_path = base_url.split("{channel}")[0].rstrip("/")
-        flags_url = f"{base_without_path}/flags/{token}"
+        # Extract base domain (protocol + domain) without paths
+        base_domain = "/".join(base_url.split("/")[:3])  # Get only protocol and domain
+        flags_url = f"{base_domain}/flags/{token}"
         logging.info(f"fetching flags from {flags_url}")
         
         # Make the request
