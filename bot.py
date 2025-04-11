@@ -70,27 +70,15 @@ async def list_channels(update: Update, _context: CallbackContext):
 
             for feed_item in feeds_in_cat:
                 channel_name = feed_item["title"]
-                # Basic Markdown V2 escaping for channel title itself might be needed
-                # but let's assume titles are generally safe for simplicity first.
                 feed_line = f"  • {channel_name}"
 
                 # Add flags if present
                 if feed_item["flags"]:
-                    # Экранируем символ '-' в именах флагов
-                    escaped_flags = []
-                    for flag in feed_item['flags']:
-                        escaped_flag = flag.replace('-', '\\-')
-                        escaped_flags.append(escaped_flag)
-                    feed_line += f", flags: {' '.join(escaped_flags)}"
+                    feed_line += f", flags: {' '.join(feed_item['flags'])}"
 
-                # Add excluded text if present, with MarkdownV2 escaping
+                # Add excluded text if present
                 if feed_item["excluded_text"]:
-                    # Define characters to escape for MarkdownV2
-                    md_escape_chars = '_*[]()~`>#+-=|{}.!' # Corrected list
-                    escaped_text = feed_item['excluded_text']
-                    for char in md_escape_chars:
-                        escaped_text = escaped_text.replace(char, f'\\{char}')
-                    feed_line += f", regex: `{escaped_text}`"
+                    feed_line += f", regex: {feed_item['excluded_text']}"
 
                 cat_message_content += feed_line + "\n"
 
@@ -106,18 +94,9 @@ async def list_channels(update: Update, _context: CallbackContext):
                     channel_name = feed_item["title"]
                     feed_line = f"  • {channel_name}"
                     if feed_item["flags"]:
-                        # Экранируем символ '-' в именах флагов
-                        escaped_flags = []
-                        for flag in feed_item['flags']:
-                            escaped_flag = flag.replace('-', '\\-')
-                            escaped_flags.append(escaped_flag)
-                        feed_line += f", flags: {' '.join(escaped_flags)}"
+                        feed_line += f", flags: {' '.join(feed_item['flags'])}"
                     if feed_item["excluded_text"]:
-                        md_escape_chars = '_*[]()~`>#+-=|{}.!'
-                        escaped_text = feed_item['excluded_text']
-                        for char in md_escape_chars:
-                            escaped_text = escaped_text.replace(char, f'\\{char}')
-                        feed_line += f", regex: `{escaped_text}`"
+                        feed_line += f", regex: {feed_item['excluded_text']}"
 
                     feed_text_line = feed_line + "\n"
 
@@ -135,10 +114,10 @@ async def list_channels(update: Update, _context: CallbackContext):
 
                 # Send all chunks for this category
                 for chunk in chunks:
-                    await update.message.reply_text(chunk, parse_mode='MarkdownV2')
+                    await update.message.reply_text(chunk)
             else:
                 # Send the single message for this category
-                await update.message.reply_text(full_cat_message, parse_mode='MarkdownV2')
+                await update.message.reply_text(full_cat_message)
 
     except Exception as error:
         # Catch potential errors from get_channels_by_category as well
