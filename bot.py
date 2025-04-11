@@ -724,7 +724,7 @@ async def _handle_flag_toggle(query, context: CallbackContext, action: str, flag
         final_flags = new_flags
         final_merge_seconds = parsed_data.get("merge_seconds")
         flags_display = " ".join(final_flags) if final_flags else "none"
-        message = f"{success_message_part} for channel @{channel_name}.Current flags: {flags_display}"
+        message = f"{success_message_part} for channel @{channel_name}. Current flags: {flags_display}"
 
         # Восстанавливаем отправку клавиатуры при успехе
         keyboard = create_flag_keyboard(channel_name, final_flags, final_merge_seconds)
