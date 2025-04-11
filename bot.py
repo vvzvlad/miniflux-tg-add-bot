@@ -76,7 +76,12 @@ async def list_channels(update: Update, _context: CallbackContext):
 
                 # Add flags if present
                 if feed_item["flags"]:
-                    feed_line += f", flags: {' '.join(feed_item['flags'])}"
+                    # Экранируем символ '-' в именах флагов
+                    escaped_flags = []
+                    for flag in feed_item['flags']:
+                        escaped_flag = flag.replace('-', '\\-')
+                        escaped_flags.append(escaped_flag)
+                    feed_line += f", flags: {' '.join(escaped_flags)}"
 
                 # Add excluded text if present, with MarkdownV2 escaping
                 if feed_item["excluded_text"]:
@@ -101,7 +106,12 @@ async def list_channels(update: Update, _context: CallbackContext):
                     channel_name = feed_item["title"]
                     feed_line = f"  • {channel_name}"
                     if feed_item["flags"]:
-                        feed_line += f", flags: {' '.join(feed_item['flags'])}"
+                        # Экранируем символ '-' в именах флагов
+                        escaped_flags = []
+                        for flag in feed_item['flags']:
+                            escaped_flag = flag.replace('-', '\\-')
+                            escaped_flags.append(escaped_flag)
+                        feed_line += f", flags: {' '.join(escaped_flags)}"
                     if feed_item["excluded_text"]:
                         md_escape_chars = '_*[]()~`>#+-=|{}.!'
                         escaped_text = feed_item['excluded_text']
