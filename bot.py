@@ -60,7 +60,6 @@ async def list_channels(update: Update, _context: CallbackContext):
             await update.message.reply_text("No channels subscribed through RSS Bridge found.")
             return
 
-        # --- Formatting logic moved here ---
         await update.message.reply_text("Subscribed channels by category:")
 
         for cat_title, feeds_in_cat in channels_by_category.items():
@@ -1097,7 +1096,7 @@ a*: 0 or more, a+: 1 or more, a?: 0 or 1
                 prompt_message += f"Current merge time: {current_merge_seconds} seconds.\n\n"
             else:
                 prompt_message += "Merge time is not currently set.\n\n"
-            prompt_message += "Please send the new merge time in seconds (e.g., 300). Send 0 or empty message to disable merging (remove the parameter)."
+            prompt_message += "Please send the new merge time in seconds (e.g., 300). Send 0 to disable merging."
 
             # Removed parse_mode argument
             await query.edit_message_text(prompt_message)
