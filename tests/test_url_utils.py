@@ -1,218 +1,239 @@
+"""Tests for src/url_utils.py."""
+
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 import requests
-import re
-from bs4 import BeautifulSoup
 
-# Import from parent directory
-import sys
-import os
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, project_root)
-
-import url_utils
-from url_utils import (
-    parse_telegram_link,
+from src.settings import settings
+from src.url_utils import (
+    TELEGRAM_LINK_RE,
     extract_channel_from_feed_url,
     extract_rss_links_from_html,
-    is_valid_rss_url
+    is_valid_rss_url,
+    parse_telegram_link,
 )
 
-# --- Tests for parse_telegram_link function ---
+BRIDGE_URL = "http://test.rssbridge.local/rss/{channel}/test_token"
+
+
+@pytest.fixture(autouse=True)
+def bridge_url(monkeypatch):
+    """extract_channel_from_feed_url reads the template from settings at call time."""
+    monkeypatch.setattr(settings, "rss_bridge_url", BRIDGE_URL)
+
+
+# --- parse_telegram_link ----------------------------------------------------
 
 def test_parse_telegram_link_channel_only():
-    """Test parsing a standard Telegram channel link without a message ID."""
+    """A channel link without a message id."""
     assert parse_telegram_link("https://t.me/alex_levitas") == "alex_levitas"
     assert parse_telegram_link("http://t.me/alex_levitas") == "alex_levitas"
     assert parse_telegram_link("t.me/alex_levitas") == "alex_levitas"
-    assert parse_telegram_link("https://t.me/alex_levitas/") == "alex_levitas" # With trailing slash
+    assert parse_telegram_link("https://t.me/alex_levitas/") == "alex_levitas"
+
 
 def test_parse_telegram_link_channel_with_message():
-    """Test parsing a standard Telegram channel link with a message ID."""
+    """A channel link with a message id."""
     assert parse_telegram_link("https://t.me/alex_levitas/1029") == "alex_levitas"
     assert parse_telegram_link("http://t.me/alex_levitas/1029") == "alex_levitas"
     assert parse_telegram_link("t.me/alex_levitas/1029") == "alex_levitas"
-    assert parse_telegram_link("https://t.me/alex_levitas/1029/") == "alex_levitas" # With trailing slash
+    assert parse_telegram_link("https://t.me/alex_levitas/1029/") == "alex_levitas"
 
-# Fixed the regex escape issues by using different regex pattern
-@patch('url_utils.re.search')
-def test_parse_telegram_link_success(mock_re_search):
-    """Test parsing a Telegram link with a successful match."""
-    mock_match = MagicMock()
-    mock_match.group.return_value = "channel_name"
-    mock_re_search.return_value = mock_match
-    
-    result = parse_telegram_link("https://t.me/channel_name")
-    
-    assert result == "channel_name"
-    # Simplified check since the actual regex in the function is complex
-    assert mock_re_search.called
 
-@patch('url_utils.re.search', return_value=None)
-def test_parse_telegram_link_no_match(mock_re_search):
-    """Test parsing a non-Telegram link."""
-    result = parse_telegram_link("http://example.com")
-    
-    assert result is None
-    assert mock_re_search.called
+def test_parse_telegram_link_numeric_channel_id():
+    """A numeric (negative) channel id is a valid channel identifier."""
+    assert parse_telegram_link("t.me/-1002069358234/1951") == "-1002069358234"
+    assert parse_telegram_link("https://t.me/-1002069358234") == "-1002069358234"
+
+
+def test_parse_telegram_link_private_channel_c_form():
+    """The t.me/c/<id>/<msg> private-channel form yields the numeric id."""
+    assert parse_telegram_link("t.me/c/1234567890/55") == "1234567890"
+    assert parse_telegram_link("https://t.me/c/1234567890") == "1234567890"
+
+
+def test_parse_telegram_link_inside_surrounding_text():
+    """The link is found anywhere inside the message text, not only at the start."""
+    assert parse_telegram_link("Check this out https://t.me/durov/123 — nice") == "durov"
+    assert parse_telegram_link("look: t.me/durov") == "durov"
+
+
+def test_parse_telegram_link_with_query_params():
+    """A trailing query string is tolerated (the old code returned None here)."""
+    assert parse_telegram_link("https://t.me/channel_name?start=123") == "channel_name"
+    assert parse_telegram_link("https://t.me/c/1234567890?start=123") == "1234567890"
+
+
+def test_parse_telegram_link_with_fragments():
+    """A trailing fragment is tolerated (the old code returned None here)."""
+    assert parse_telegram_link("https://t.me/channel_name#section") == "channel_name"
+    assert parse_telegram_link("https://t.me/c/1234567890#section") == "1234567890"
+
+
+def test_parse_telegram_link_joinchat_is_not_a_channel():
+    """t.me/joinchat/<hash> is an invite link, not a channel: it must not match."""
+    assert parse_telegram_link("t.me/joinchat/AAAAAEkk2WdoDrB4") is None
+    assert parse_telegram_link("https://t.me/joinchat/abc123") is None
+
+
+def test_parse_telegram_link_invite_links():
+    """t.me/+<hash> invite links yield no channel."""
+    assert parse_telegram_link("t.me/+joinchatlink") is None
+    assert parse_telegram_link("https://t.me/+AbCdEfGhIjK") is None
+
+
+def test_parse_telegram_link_preview_prefix_is_not_a_channel():
+    """t.me/s/<channel> is the web-preview form, not a channel path we support."""
+    assert parse_telegram_link("https://t.me/s/channel_name") is None
+
 
 def test_parse_telegram_link_empty_input():
-    """Test parsing with empty input."""
     assert parse_telegram_link("") is None
     assert parse_telegram_link(None) is None
 
-# Additional tests for parse_telegram_link per test plan section 4.1
-# NOTE: Tests for private links (t.me/c/...) and mentions (@...) are commented out
-# because the current regex is NOT designed to handle them.
-# These might need adjustments if the requirements change.
-# @patch('url_utils.re.search')
-# def test_parse_telegram_link_private_channel(mock_re_search):
-#     """Test parsing private channel links."""
-#     # Настраиваем поведение re.search для имитации совпадения с каналом
-#     mock_search_result = MagicMock()
-#     mock_search_result.group.return_value = "1234567890"
-#     mock_re_search.return_value = mock_search_result
-#     
-#     # Test t.me/c/{channel_id} format
-#     assert parse_telegram_link("t.me/c/1234567890") == "1234567890"
-#     # Test https://t.me/c/{channel_id} format
-#     assert parse_telegram_link("https://t.me/c/1234567890") == "1234567890"
-#
-# @patch('url_utils.re.search')
-# def test_parse_telegram_link_private_channel_message(mock_re_search):
-#     """Test parsing private channel message links."""
-#     # Настраиваем поведение re.search для имитации совпадения с каналом
-#     mock_search_result = MagicMock()
-#     mock_search_result.group.return_value = "1234567890"
-#     mock_re_search.return_value = mock_search_result
-#     
-#     # Test t.me/c/{channel_id}/{message_id} format
-#     assert parse_telegram_link("t.me/c/1234567890/123") == "1234567890"
-#     # Test https://t.me/c/{channel_id}/{message_id} format
-#     assert parse_telegram_link("https://t.me/c/1234567890/123") == "1234567890"
-#
-# @patch('url_utils.re.search')
-# def test_parse_telegram_link_channel_mention(mock_re_search):
-#     """Test parsing channel mentions."""
-#     # Настраиваем поведение re.search для имитации совпадения с ником канала
-#     mock_search_result = MagicMock()
-#     mock_search_result.group.return_value = "channelname"
-#     mock_re_search.return_value = mock_search_result
-#     
-#     # Test @channelname format
-#     assert parse_telegram_link("@channelname") == "channelname"
-#     # Test with spaces around
-#     assert parse_telegram_link(" @channelname ") == "channelname"
-
-def test_parse_telegram_link_invite_links():
-    """Test parsing invite links which should return None."""
-    # Test t.me/+joinchatlink format
-    assert parse_telegram_link("t.me/+joinchatlink") is None
-    # Test https://t.me/+joinchatlink format
-    assert parse_telegram_link("https://t.me/+joinchatlink") is None
 
 def test_parse_telegram_link_plain_text():
-    """Test parsing non-URL plain text strings which should return None."""
     assert parse_telegram_link("plain text") is None
-    assert parse_telegram_link("channelname") is None  # without @ prefix
-    assert parse_telegram_link("") is None  # empty string already tested but added for completeness
+    assert parse_telegram_link("channelname") is None
+
 
 def test_parse_telegram_link_other_platform_urls():
-    """Test parsing URLs from other platforms which should return None."""
     assert parse_telegram_link("https://example.com") is None
     assert parse_telegram_link("https://twitter.com/username") is None
-    assert parse_telegram_link("https://web.telegram.org/z/#839762") is None  # web version link
+    assert parse_telegram_link("https://web.telegram.org/z/#839762") is None
 
-# --- Tests for extract_channel_from_feed_url function ---
 
-@patch('url_utils.RSS_BRIDGE_URL', 'http://rssbridge.example.com/?action=display&bridge=Telegram&channel={channel}')
-def test_extract_channel_from_feed_url_with_placeholder():
-    """Test extract_channel_from_feed_url with a URL matching the configured RSS_BRIDGE_URL format."""
-    with patch('url_utils.extract_channel_from_feed_url', wraps=url_utils.extract_channel_from_feed_url) as wrapped_mock:
-        # Задаем такое поведение, чтобы не было реальной проверки URL
-        wrapped_mock.side_effect = lambda url: "test_channel" if "test_channel" in url else None
-        
-        feed_url = "http://rssbridge.example.com/?action=display&bridge=Telegram&channel=test_channel"
-        result = wrapped_mock(feed_url)
-        assert result == "test_channel"
+def test_parse_telegram_link_malformed_urls():
+    """A bare domain or a hyphenated (thus invalid) username yields nothing."""
+    assert parse_telegram_link("https://channel_name") is None
+    # Hyphens are not valid in Telegram usernames
+    assert parse_telegram_link("https://t.me/channel_name-with-hyphens") is None
+    # Underscores are
+    assert parse_telegram_link("https://t.me/channel_name_with_underscores") == "channel_name_with_underscores"
 
-@patch('url_utils.RSS_BRIDGE_URL', 'http://rssbridge.example.com/telegram.php?channel={channel}')
-def test_extract_channel_from_feed_url_without_placeholder():
-    """Test extract_channel_from_feed_url with a URL that doesn't exactly match RSS_BRIDGE_URL format."""
-    with patch('url_utils.extract_channel_from_feed_url', wraps=url_utils.extract_channel_from_feed_url) as wrapped_mock:
-        # Задаем такое поведение, чтобы не было реальной проверки URL
-        wrapped_mock.side_effect = lambda url: "test_channel" if "test_channel" in url else None
-        
-        feed_url = "http://rssbridge.example.com/telegram.php?channel=test_channel"
-        result = wrapped_mock(feed_url)
-        assert result == "test_channel"
 
-@patch('url_utils.RSS_BRIDGE_URL', None)
-def test_extract_channel_from_feed_url_no_rss_bridge_url():
-    """Test extract_channel_from_feed_url when RSS_BRIDGE_URL is not set."""
-    feed_url = "http://test.rssbridge.local/rss/test_channel"
-    result = extract_channel_from_feed_url(feed_url)
-    assert result is None
+def test_parse_telegram_link_is_case_sensitive_on_domain():
+    """The domain match is case-sensitive, as the regex is written."""
+    assert parse_telegram_link("https://T.ME/CHANNEL_NAME") is None
 
-@patch('url_utils.RSS_BRIDGE_URL', 'http://different.domain.com/rss/{channel}')
-def test_extract_channel_from_feed_url_mismatched_url():
-    """Test extract_channel_from_feed_url when the feed URL doesn't match RSS_BRIDGE_URL."""
-    feed_url = "http://test.rssbridge.local/rss/test_channel"
-    result = extract_channel_from_feed_url(feed_url)
-    assert result is None
 
-# Additional tests for extract_channel_from_feed_url per test plan section 4.3
-@patch('url_utils.RSS_BRIDGE_URL', 'http://rssbridge.example.com/?action=display&bridge=Telegram&channel={channel}')
+def test_parse_telegram_link_scheme_is_case_insensitive():
+    """The URL scheme is matched case-insensitively (mobile auto-capitalization)."""
+    assert parse_telegram_link("Https://t.me/foo") == "foo"
+    assert parse_telegram_link("HTTPS://t.me/foo") == "foo"
+    assert parse_telegram_link("HTTP://t.me/bar") == "bar"
+    # The host stays case-sensitive even with an uppercased scheme.
+    assert parse_telegram_link("https://T.ME/foo") is None
+
+
+def test_parse_telegram_link_empty_channel():
+    assert parse_telegram_link("https://t.me/") is None
+
+
+def test_parse_telegram_link_accepts_valid_forms():
+    """Well-formed t.me links (scheme or at a text boundary) yield the channel/id."""
+    assert parse_telegram_link("https://t.me/channel/123") == "channel"
+    assert parse_telegram_link("t.me/-1002069358234/1951") == "-1002069358234"
+    assert parse_telegram_link("t.me/channel") == "channel"
+    assert parse_telegram_link("look https://t.me/foo/12 here") == "foo"
+    assert parse_telegram_link("https://t.me/foo?single") == "foo"
+    assert parse_telegram_link("https://t.me/c/1234567890/55") == "1234567890"
+    assert parse_telegram_link("http://t.me/abc") == "abc"
+    assert parse_telegram_link("https://t.me/foo#frag") == "foo"
+    assert parse_telegram_link("please add t.me/mychan") == "mychan"
+
+
+def test_parse_telegram_link_rejects_other_me_domains():
+    """A ".me" host label ending in "t" must not be mistaken for a t.me link."""
+    assert parse_telegram_link("format.me/page") is None
+    assert parse_telegram_link("root.me/123") is None
+    assert parse_telegram_link("https://list.me/abc") is None
+    assert parse_telegram_link("check start.me/foo please") is None
+    assert parse_telegram_link("connect.me/user") is None
+
+
+def test_parse_telegram_link_rejects_embedded():
+    """A t.me glued inside another URL's path (or a non-channel form) yields nothing."""
+    assert parse_telegram_link("https://example.com/t.me/foo") is None
+    assert parse_telegram_link("https://example.com/rss.xml") is None
+    assert parse_telegram_link("t.me/joinchat/AAAA") is None
+    # A bare "@username" is handled separately, not by parse_telegram_link.
+    assert parse_telegram_link("@channelname") is None
+
+
+def test_telegram_link_re_is_exported():
+    """The compiled regex is part of the module API (used for direct matching)."""
+    assert TELEGRAM_LINK_RE.search("https://t.me/durov").group(1) == "durov"
+
+
+# --- extract_channel_from_feed_url ------------------------------------------
+
+def test_extract_channel_from_feed_url_matching_bridge():
+    """A feed URL built from the configured template yields its channel."""
+    feed_url = "http://test.rssbridge.local/rss/test_channel/test_token"
+    assert extract_channel_from_feed_url(feed_url) == "test_channel"
+
+
 def test_extract_channel_from_feed_url_with_query_params():
-    """Test extract_channel_from_feed_url with variations in the RSS-Bridge path."""
-    # Патчим startswith, чтобы начальная проверка URL всегда проходила
-    with patch('url_utils.extract_channel_from_feed_url') as mock_extract:
-        mock_extract.return_value = "test_channel"
-        
-        # Test with additional query parameters
-        feed_url = "http://rssbridge.example.com/?action=display&bridge=Telegram&channel=test_channel&format=Atom"
-        result = mock_extract(feed_url)
-        assert result == "test_channel"
-        
-        # Test with additional fragment
-        feed_url_with_fragment = "http://rssbridge.example.com/?action=display&bridge=Telegram&channel=test_channel#section"
-        result_with_fragment = mock_extract(feed_url_with_fragment)
-        assert result_with_fragment == "test_channel"
-        
-        # Test with URL-encoded parameters
-        feed_url_encoded = "http://rssbridge.example.com/?action=display&bridge=Telegram&channel=test%20channel"
-        result_encoded = mock_extract(feed_url_encoded)
-        assert result_encoded == "test_channel"
+    """Query parameters after the channel segment are ignored."""
+    feed_url = "http://test.rssbridge.local/rss/test_channel/test_token?exclude_flags=a,b"
+    assert extract_channel_from_feed_url(feed_url) == "test_channel"
 
-@patch('url_utils.extract_channel_from_feed_url')
-def test_extract_channel_from_feed_url_empty_input(mock_extract):
-    """Test extract_channel_from_feed_url with None or an empty string as input."""
-    mock_extract.return_value = None
-    assert mock_extract(None) is None
-    assert mock_extract("") is None
 
-@patch('url_utils.RSS_BRIDGE_URL', 'http://rssbridge.example.com/?action=display&bridge=Telegram&channel={channel}')
-def test_extract_channel_from_feed_url_not_matching_pattern():
-    """Test extract_channel_from_feed_url with URLs resembling RSS-Bridge but not matching the pattern."""
+def test_extract_channel_from_feed_url_url_encoded():
+    """URL-encoded characters in the channel segment are decoded."""
+    feed_url = "http://test.rssbridge.local/rss/%40test_channel/test_token"
+    assert extract_channel_from_feed_url(feed_url) == "@test_channel"
+
+
+def test_extract_channel_from_feed_url_numeric_id():
+    feed_url = "http://test.rssbridge.local/rss/-1002069358234/test_token"
+    assert extract_channel_from_feed_url(feed_url) == "-1002069358234"
+
+
+def test_extract_channel_from_feed_url_mismatched_url():
+    """A feed URL from another host does not match the configured bridge."""
+    assert extract_channel_from_feed_url("http://different.domain.com/rss/test_channel") is None
+
+
+def test_extract_channel_from_feed_url_not_matching_pattern(monkeypatch):
+    """URLs that resemble the bridge but do not match its base prefix yield None."""
+    monkeypatch.setattr(
+        settings,
+        "rss_bridge_url",
+        "http://rssbridge.example.com/?action=display&bridge=Telegram&channel={channel}",
+    )
     # Missing action=display
-    feed_url_no_action = "http://rssbridge.example.com/?bridge=Telegram&channel=test_channel"
-    result_no_action = extract_channel_from_feed_url(feed_url_no_action)
-    assert result_no_action is None
-    
-    # Different parameter name (user instead of channel)
-    feed_url_diff_param = "http://rssbridge.example.com/?action=display&bridge=Telegram&user=test_channel"
-    result_diff_param = extract_channel_from_feed_url(feed_url_diff_param)
-    assert result_diff_param is None
-    
+    assert extract_channel_from_feed_url(
+        "http://rssbridge.example.com/?bridge=Telegram&channel=test_channel"
+    ) is None
+    # Different parameter name
+    assert extract_channel_from_feed_url(
+        "http://rssbridge.example.com/?action=display&bridge=Telegram&user=test_channel"
+    ) is None
     # Different domain
-    feed_url_diff_domain = "http://different-domain.com/?action=display&bridge=Telegram&channel=test_channel"
-    result_diff_domain = extract_channel_from_feed_url(feed_url_diff_domain)
-    assert result_diff_domain is None
+    assert extract_channel_from_feed_url(
+        "http://different-domain.com/?action=display&bridge=Telegram&channel=test_channel"
+    ) is None
 
-# --- Tests for extract_rss_links_from_html function ---
+
+def test_extract_channel_from_feed_url_query_template():
+    """A query-style bridge template also resolves the channel."""
+    monkeypatch_url = "http://rssbridge.example.com/?action=display&bridge=Telegram&channel={channel}"
+    with patch.object(settings, "rss_bridge_url", monkeypatch_url):
+        feed_url = "http://rssbridge.example.com/?action=display&bridge=Telegram&channel=test_channel"
+        assert extract_channel_from_feed_url(feed_url) == "test_channel"
+
+
+def test_extract_channel_from_feed_url_empty_input():
+    assert extract_channel_from_feed_url(None) is None
+    assert extract_channel_from_feed_url("") is None
+
+
+# --- extract_rss_links_from_html --------------------------------------------
 
 def test_extract_rss_links_from_html_with_links():
-    """Test extract_rss_links_from_html with HTML containing RSS links."""
     html_content = """
     <html>
         <head>
@@ -222,408 +243,173 @@ def test_extract_rss_links_from_html_with_links():
         <body>Some content</body>
     </html>
     """
-    base_url = "https://example.com"
-    
-    expected_links = [
-        {'title': 'RSS Feed', 'href': 'https://example.com/rss.xml'},
-        {'title': 'Atom Feed', 'href': 'https://example.com/atom.xml'}
+    result = extract_rss_links_from_html(html_content, "https://example.com")
+
+    assert result == [
+        {"title": "RSS Feed", "href": "https://example.com/rss.xml"},
+        {"title": "Atom Feed", "href": "https://example.com/atom.xml"},
     ]
-    
-    result = extract_rss_links_from_html(html_content, base_url)
-    assert len(result) == 2
-    assert result == expected_links
+
 
 def test_extract_rss_links_from_html_no_links():
-    """Test extract_rss_links_from_html with HTML not containing RSS links."""
     html_content = """
     <html>
-        <head>
-            <link rel="stylesheet" href="style.css">
-        </head>
+        <head><link rel="stylesheet" href="style.css"></head>
         <body>Some content</body>
     </html>
     """
-    base_url = "https://example.com"
-    
-    result = extract_rss_links_from_html(html_content, base_url)
-    assert result == []
+    assert extract_rss_links_from_html(html_content, "https://example.com") == []
+
 
 def test_extract_rss_links_from_html_exception():
-    """Test extract_rss_links_from_html when an exception occurs."""
-    with patch('url_utils.BeautifulSoup', side_effect=Exception("Test error")):
-        result = extract_rss_links_from_html("some html", "https://example.com")
-        assert result == []
+    """A parser blow-up is contained: an empty list, never an exception."""
+    with patch("src.url_utils.BeautifulSoup", side_effect=Exception("Test error")):
+        assert extract_rss_links_from_html("some html", "https://example.com") == []
 
-# --- Tests for is_valid_rss_url function ---
 
-@patch('requests.head')
+# --- is_valid_rss_url -------------------------------------------------------
+
+@patch("requests.head")
 def test_is_valid_rss_url_direct_feed_head(mock_head):
-    """Test is_valid_rss_url with a direct RSS feed (detected via HEAD)."""
+    """A direct feed is recognized from the HEAD Content-Type."""
     test_url = "https://example.com/feed.xml"
-    
-    # Mock HEAD response
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.headers = {'Content-Type': 'application/rss+xml'}
-    mock_head.return_value = mock_response
-    
-    result_is_direct, result_data = is_valid_rss_url(test_url)
-    
-    assert result_is_direct is True
-    assert result_data == test_url
+    mock_head.return_value = MagicMock(
+        status_code=200, headers={"Content-Type": "application/rss+xml"}
+    )
+
+    assert is_valid_rss_url(test_url) == (True, test_url)
     mock_head.assert_called_once()
 
-@patch('requests.head')
-@patch('requests.get')
-def test_is_valid_rss_url_direct_feed_get(mock_get, mock_head):
-    """Test is_valid_rss_url with a direct RSS feed (detected via GET after HEAD fails)."""
+
+@patch("requests.get")
+@patch("requests.head")
+def test_is_valid_rss_url_direct_feed_get(mock_head, mock_get):
+    """HEAD says HTML, GET says feed: the GET verdict wins."""
     test_url = "https://example.com/feed.xml"
-    
-    # Mock HEAD response that doesn't identify as RSS but as HTML
-    mock_head_response = MagicMock()
-    mock_head_response.status_code = 200
-    mock_head_response.headers = {'Content-Type': 'text/html'}
-    mock_head.return_value = mock_head_response
-    
-    # Mock GET response (identifies as RSS)
-    mock_get_response = MagicMock()
-    mock_get_response.status_code = 200
-    mock_get_response.headers = {'Content-Type': 'application/rss+xml'}
-    mock_get.return_value = mock_get_response
-    
-    result_is_direct, result_data = is_valid_rss_url(test_url)
-    
-    assert result_is_direct is True
-    assert result_data == test_url
+    mock_head.return_value = MagicMock(status_code=200, headers={"Content-Type": "text/html"})
+    mock_get.return_value = MagicMock(
+        status_code=200, headers={"Content-Type": "application/rss+xml"}
+    )
+
+    assert is_valid_rss_url(test_url) == (True, test_url)
     mock_head.assert_called_once()
     mock_get.assert_called_once()
 
-@patch('requests.head')
-@patch('requests.get')
-@patch('url_utils.extract_rss_links_from_html')
-def test_is_valid_rss_url_html_with_links(mock_extract, mock_get, mock_head):
-    """Test is_valid_rss_url with HTML containing RSS links."""
+
+@patch("src.url_utils.extract_rss_links_from_html")
+@patch("requests.get")
+@patch("requests.head")
+def test_is_valid_rss_url_html_with_links(mock_head, mock_get, mock_extract):
+    """An HTML page with feed links returns the links."""
     test_url = "https://example.com/page.html"
-    expected_links = [
-        {'title': 'RSS Feed', 'href': 'https://example.com/rss.xml'}
-    ]
-    
-    # Mock HEAD response (identifies as HTML)
-    mock_head_response = MagicMock()
-    mock_head_response.status_code = 200
-    mock_head_response.headers = {'Content-Type': 'text/html'}
-    mock_head.return_value = mock_head_response
-    
-    # Mock GET response (returns HTML content)
-    mock_get_response = MagicMock()
-    mock_get_response.status_code = 200
-    mock_get_response.headers = {'Content-Type': 'text/html'}
-    mock_get_response.text = "<html>Some HTML</html>"
-    mock_get.return_value = mock_get_response
-    
-    # Mock extraction function to return links
+    expected_links = [{"title": "RSS Feed", "href": "https://example.com/rss.xml"}]
+
+    mock_head.return_value = MagicMock(status_code=200, headers={"Content-Type": "text/html"})
+    mock_get.return_value = MagicMock(
+        status_code=200, headers={"Content-Type": "text/html"}, text="<html>Some HTML</html>"
+    )
     mock_extract.return_value = expected_links
-    
-    result_is_direct, result_data = is_valid_rss_url(test_url)
-    
-    assert result_is_direct is False
-    assert result_data == expected_links
-    mock_head.assert_called_once()
-    mock_get.assert_called_once()
+
+    assert is_valid_rss_url(test_url) == (False, expected_links)
     mock_extract.assert_called_once_with("<html>Some HTML</html>", test_url)
 
-@patch('requests.head')
-@patch('requests.get')
-@patch('url_utils.extract_rss_links_from_html')
-def test_is_valid_rss_url_html_no_links(mock_extract, mock_get, mock_head):
-    """Test is_valid_rss_url with HTML not containing RSS links."""
+
+@patch("src.url_utils.extract_rss_links_from_html")
+@patch("requests.get")
+@patch("requests.head")
+def test_is_valid_rss_url_html_no_links(mock_head, mock_get, mock_extract):
+    """An HTML page without feed links returns an empty list."""
     test_url = "https://example.com/page.html"
-    
-    # Mock HEAD response (identifies as HTML)
-    mock_head_response = MagicMock()
-    mock_head_response.status_code = 200
-    mock_head_response.headers = {'Content-Type': 'text/html'}
-    mock_head.return_value = mock_head_response
-    
-    # Mock GET response (returns HTML content)
-    mock_get_response = MagicMock()
-    mock_get_response.status_code = 200
-    mock_get_response.headers = {'Content-Type': 'text/html'}
-    mock_get_response.text = "<html>Some HTML</html>"
-    mock_get.return_value = mock_get_response
-    
-    # Mock extraction function to return no links
+    mock_head.return_value = MagicMock(status_code=200, headers={"Content-Type": "text/html"})
+    mock_get.return_value = MagicMock(
+        status_code=200, headers={"Content-Type": "text/html"}, text="<html>Some HTML</html>"
+    )
     mock_extract.return_value = []
-    
-    result_is_direct, result_data = is_valid_rss_url(test_url)
-    
-    assert result_is_direct is False
-    assert result_data == []
-    mock_head.assert_called_once()
-    mock_get.assert_called_once()
-    mock_extract.assert_called_once_with("<html>Some HTML</html>", test_url)
 
-@patch('requests.head')
+    assert is_valid_rss_url(test_url) == (False, [])
+
+
+@patch("requests.head")
 def test_is_valid_rss_url_head_error(mock_head):
-    """Test is_valid_rss_url handling HEAD request errors."""
-    test_url = "https://example.com/feed.xml"
-    
-    # Mock HEAD to raise exception
+    """A failing HEAD falls through to GET; if that fails too, nothing is found."""
     mock_head.side_effect = requests.exceptions.RequestException("Connection error")
-    
-    # Mock GET to also fail (via patch)
-    with patch('requests.get', side_effect=requests.exceptions.RequestException("Connection error")):
-        result_is_direct, result_data = is_valid_rss_url(test_url)
-        
-        assert result_is_direct is False
-        assert result_data == []
-        mock_head.assert_called_once()
 
-@patch('requests.head')
-@patch('requests.get')
-def test_is_valid_rss_url_get_error(mock_get, mock_head):
-    """Test is_valid_rss_url handling GET request errors."""
-    test_url = "https://example.com/feed.xml"
-    
-    # Mock HEAD response (identifies as HTML, so will proceed to GET)
-    mock_head_response = MagicMock()
-    mock_head_response.status_code = 200
-    mock_head_response.headers = {'Content-Type': 'text/html'}
-    mock_head.return_value = mock_head_response
-    
-    # Mock GET to raise exception
+    with patch("requests.get", side_effect=requests.exceptions.RequestException("Connection error")):
+        assert is_valid_rss_url("https://example.com/feed.xml") == (False, [])
+    mock_head.assert_called_once()
+
+
+@patch("requests.get")
+@patch("requests.head")
+def test_is_valid_rss_url_get_error(mock_head, mock_get):
+    mock_head.return_value = MagicMock(status_code=200, headers={"Content-Type": "text/html"})
     mock_get.side_effect = requests.exceptions.RequestException("Connection error")
-    
-    result_is_direct, result_data = is_valid_rss_url(test_url)
-    
-    assert result_is_direct is False
-    assert result_data == []
+
+    assert is_valid_rss_url("https://example.com/feed.xml") == (False, [])
+    mock_get.assert_called_once()
+
+
+@patch("requests.get")
+@patch("requests.head")
+def test_is_valid_rss_url_unexpected_content_type(mock_head, mock_get):
+    """A non-feed, non-HTML Content-Type stops the check after HEAD."""
+    mock_head.return_value = MagicMock(status_code=200, headers={"Content-Type": "image/jpeg"})
+
+    assert is_valid_rss_url("https://example.com/image.jpg") == (False, [])
+    mock_get.assert_not_called()
+
+
+@patch("requests.get")
+@patch("requests.head")
+def test_is_valid_rss_url_json_content_type(mock_head, mock_get):
+    mock_head.return_value = MagicMock(status_code=200, headers={"Content-Type": "application/json"})
+
+    assert is_valid_rss_url("https://example.com/api.json") == (False, [])
+    mock_get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "exception",
+    [
+        requests.exceptions.Timeout("Connection timed out"),
+        requests.exceptions.ConnectionError("Connection refused"),
+        requests.exceptions.TooManyRedirects("Too many redirects"),
+        requests.exceptions.SSLError("SSL Certificate Verification Failed"),
+        requests.exceptions.HTTPError("404 Not Found"),
+        requests.exceptions.InvalidURL("Invalid URL format"),
+    ],
+)
+def test_is_valid_rss_url_request_exceptions(exception):
+    """Every requests-level failure is contained and reported as 'nothing found'."""
+    with patch("requests.head", side_effect=exception), \
+         patch("requests.get", side_effect=exception):
+        assert is_valid_rss_url("https://example.com/feed.xml") == (False, [])
+
+
+@patch("requests.get")
+@patch("requests.head")
+def test_is_valid_rss_url_no_content_type(mock_head, mock_get):
+    """A missing Content-Type on HEAD still tries a GET."""
+    mock_head.return_value = MagicMock(status_code=200, headers={})
+    mock_get.return_value = MagicMock(
+        status_code=200, headers={}, text="<html><body>Not an RSS feed</body></html>"
+    )
+
+    with patch("src.url_utils.extract_rss_links_from_html", return_value=[]):
+        assert is_valid_rss_url("https://example.com/unknown-type") == (False, [])
+
     mock_head.assert_called_once()
     mock_get.assert_called_once()
 
-@patch('requests.head')
-@patch('requests.get')
-def test_is_valid_rss_url_unexpected_content_type(mock_get, mock_head):
-    """Test is_valid_rss_url with an unexpected content type."""
-    test_url = "https://example.com/image.jpg"
-    
-    # Mock HEAD response (image content type)
-    mock_head_response = MagicMock()
-    mock_head_response.status_code = 200
-    mock_head_response.headers = {'Content-Type': 'image/jpeg'}
-    mock_head.return_value = mock_head_response
-    
-    result_is_direct, result_data = is_valid_rss_url(test_url)
-    
-    assert result_is_direct is False
-    assert result_data == []
-    mock_head.assert_called_once()
-    # GET should not be called since HEAD determined it's not RSS or HTML
-    mock_get.assert_not_called()
 
-# Additional tests for is_valid_rss_url per test plan section 4.2
-@patch('requests.head')
-@patch('requests.get')
-def test_is_valid_rss_url_non_xml_content_type(mock_get, mock_head):
-    """Test is_valid_rss_url with non-XML and non-HTML content type."""
-    test_url = "https://example.com/data.json"
-    
-    # Mock HEAD response with JSON content type
-    mock_head_response = MagicMock()
-    mock_head_response.status_code = 200
-    mock_head_response.headers = {'Content-Type': 'application/json'}
-    mock_head.return_value = mock_head_response
-    
-    # Mock GET should not be called in this case
-    
-    result_is_direct, result_data = is_valid_rss_url(test_url)
-    
-    assert result_is_direct is False
-    assert result_data is None or result_data == []  # Check based on implementation
-    mock_head.assert_called_once()
-    mock_get.assert_not_called()
+@patch("requests.get")
+@patch("requests.head")
+def test_is_valid_rss_url_general_exception(mock_head, mock_get):
+    """An unexpected error during link extraction is contained."""
+    mock_head.return_value = MagicMock(status_code=200, headers={"Content-Type": "text/html"})
+    mock_get.return_value = MagicMock(
+        status_code=200, headers={"Content-Type": "text/html"}, text="<html>Some HTML</html>"
+    )
 
-@patch('requests.head', side_effect=requests.exceptions.Timeout("Connection timed out"))
-def test_is_valid_rss_url_timeout(mock_head):
-    """Test is_valid_rss_url when request times out."""
-    test_url = "https://example.com/feed.xml"
-    
-    result_is_direct, result_data = is_valid_rss_url(test_url)
-    
-    assert result_is_direct is False
-    assert result_data is None or result_data == []  # Check based on implementation
-    mock_head.assert_called_once()
-
-@patch('requests.head', side_effect=requests.exceptions.ConnectionError("Connection refused"))
-def test_is_valid_rss_url_connection_error(mock_head):
-    """Test is_valid_rss_url when connection error occurs."""
-    test_url = "https://example.com/feed.xml"
-    
-    result_is_direct, result_data = is_valid_rss_url(test_url)
-    
-    assert result_is_direct is False
-    assert result_data is None or result_data == []  # Check based on implementation
-    mock_head.assert_called_once()
-
-@patch('requests.head')
-def test_is_valid_rss_url_invalid_url_format(mock_head):
-    """Test is_valid_rss_url with an invalid URL format."""
-    test_url = "htp://invalid.format"
-    mock_head.side_effect = requests.exceptions.InvalidURL("Invalid URL format")
-    
-    result_is_direct, result_data = is_valid_rss_url(test_url)
-    
-    assert result_is_direct is False
-    assert result_data is None or result_data == []
-    mock_head.assert_called_once()
-
-# Additional tests for is_valid_rss_url for other request exceptions
-
-@patch('requests.head', side_effect=requests.exceptions.TooManyRedirects("Too many redirects"))
-def test_is_valid_rss_url_too_many_redirects(mock_head):
-    """Test is_valid_rss_url when TooManyRedirects exception is raised."""
-    # Set up the mock for get request to also raise an exception as HEAD failed
-    with patch('requests.get', side_effect=requests.exceptions.TooManyRedirects("Too many redirects")):
-        result_is_feed, result_data = is_valid_rss_url("https://example.com/feed-with-redirects")
-        
-        # Verify both HEAD and GET are attempted and fail
-        assert mock_head.called
-        assert not result_is_feed
-        assert result_data == []
-
-@patch('requests.head', side_effect=requests.exceptions.SSLError("SSL Certificate Verification Failed"))
-def test_is_valid_rss_url_ssl_error(mock_head):
-    """Test is_valid_rss_url when SSLError exception is raised."""
-    # Set up the mock for get request to also raise an exception as HEAD failed
-    with patch('requests.get', side_effect=requests.exceptions.SSLError("SSL Certificate Verification Failed")):
-        result_is_feed, result_data = is_valid_rss_url("https://example.com/feed-with-ssl-error")
-        
-        assert mock_head.called
-        assert not result_is_feed
-        assert result_data == []
-
-@patch('requests.head', side_effect=requests.exceptions.HTTPError("404 Not Found"))
-def test_is_valid_rss_url_http_error(mock_head):
-    """Test is_valid_rss_url when HTTPError exception is raised."""
-    # Set up the mock for get request to also raise an exception as HEAD failed
-    with patch('requests.get', side_effect=requests.exceptions.HTTPError("404 Not Found")):
-        result_is_feed, result_data = is_valid_rss_url("https://example.com/nonexistent-feed")
-        
-        assert mock_head.called
-        assert not result_is_feed
-        assert result_data == []
-
-@patch('requests.head')
-@patch('requests.get')
-def test_is_valid_rss_url_json_content_type(mock_get, mock_head):
-    """Test is_valid_rss_url with a URL that returns application/json Content-Type."""
-    # Set up the mock head response with JSON content type
-    mock_head_response = MagicMock()
-    mock_head_response.headers = {'Content-Type': 'application/json'}
-    mock_head_response.status_code = 200
-    mock_head.return_value = mock_head_response
-    
-    # Set up the mock get response (should not be called if head determines it's not XML/HTML)
-    mock_get_response = MagicMock()
-    mock_get.return_value = mock_get_response
-    
-    result_is_feed, result_data = is_valid_rss_url("https://example.com/api.json")
-    
-    assert mock_head.called
-    # GET is not called in this case because HEAD already determined it's not a feed
-    assert not mock_get.called
-    assert not result_is_feed
-    assert result_data == []
-
-@patch('requests.head')
-def test_is_valid_rss_url_malformed_url(mock_head):
-    """Test is_valid_rss_url with a malformed URL that would cause RequestException."""
-    mock_head.side_effect = requests.exceptions.InvalidURL("Invalid URL")
-    
-    with patch('requests.get', side_effect=requests.exceptions.InvalidURL("Invalid URL")):
-        result_is_feed, result_data = is_valid_rss_url("http://bad[url].com")
-        
-        assert mock_head.called
-        assert not result_is_feed
-        assert result_data == []
-
-@patch('requests.head')
-@patch('requests.get')
-def test_is_valid_rss_url_no_content_type(mock_get, mock_head):
-    """Test is_valid_rss_url when the response doesn't have a Content-Type header."""
-    # Set up the mock head response with no Content-Type
-    mock_head_response = MagicMock()
-    mock_head_response.headers = {}  # Empty headers dict
-    mock_head_response.status_code = 200
-    mock_head.return_value = mock_head_response
-    
-    # Set up the mock get response
-    mock_get_response = MagicMock()
-    mock_get_response.headers = {}  # Empty headers dict
-    mock_get_response.status_code = 200
-    mock_get_response.text = "<html><body>Not an RSS feed</body></html>"
-    mock_get.return_value = mock_get_response
-    
-    # Mock extract_rss_links_from_html to return empty list
-    with patch('url_utils.extract_rss_links_from_html', return_value=[]):
-        result_is_feed, result_data = is_valid_rss_url("https://example.com/unknown-type")
-        
-        assert mock_head.called
-        assert mock_get.called
-        assert not result_is_feed
-        assert result_data == []
-
-@patch('requests.head')
-@patch('requests.get')
-def test_is_valid_rss_url_general_exception(mock_get, mock_head):
-    """Test is_valid_rss_url when a general exception occurs during processing."""
-    # Set up the mock head response
-    mock_head_response = MagicMock()
-    mock_head_response.headers = {'Content-Type': 'text/html'}
-    mock_head_response.status_code = 200
-    mock_head.return_value = mock_head_response
-    
-    # Set up the mock get response to succeed
-    mock_get_response = MagicMock()
-    mock_get_response.headers = {'Content-Type': 'text/html'}
-    mock_get_response.status_code = 200
-    mock_get_response.text = "<html><body>Some HTML</body></html>"
-    mock_get.return_value = mock_get_response
-    
-    # But then make extract_rss_links_from_html raise a general exception
-    with patch('url_utils.extract_rss_links_from_html', side_effect=Exception("Unexpected error")):
-        result_is_feed, result_data = is_valid_rss_url("https://example.com/problematic-page")
-        
-        assert mock_head.called
-        assert mock_get.called
-        assert not result_is_feed
-        assert result_data == []
-
-# Add tests for parse_telegram_link with more complex edge cases
-def test_parse_telegram_link_with_query_params():
-    """Test parse_telegram_link with URLs containing query parameters."""
-    # Use the actual function since we're testing a new edge case
-    # Channel link with query parameters
-    assert parse_telegram_link("https://t.me/channel_name?start=123") is None
-    
-    # Private channel with query parameters
-    assert parse_telegram_link("https://t.me/c/1234567890?start=123") is None
-
-def test_parse_telegram_link_with_fragments():
-    """Test parse_telegram_link with URLs containing fragments."""
-    # Channel link with fragment
-    assert parse_telegram_link("https://t.me/channel_name#section") is None
-    
-    # Private channel with fragment
-    assert parse_telegram_link("https://t.me/c/1234567890#section") is None
-
-def test_parse_telegram_link_malformed_urls():
-    """Test parse_telegram_link with malformed URLs."""
-    # Missing domain
-    assert parse_telegram_link("https://channel_name") is None
-    
-    # Malformed protocol
-    assert parse_telegram_link("htp://t.me/channel_name") is None
-    
-    # URL with spaces (should be encoded in a proper URL)
-    assert parse_telegram_link("https://t.me/channel name") is None 
+    with patch("src.url_utils.extract_rss_links_from_html", side_effect=Exception("Unexpected error")):
+        assert is_valid_rss_url("https://example.com/problematic-page") == (False, [])
