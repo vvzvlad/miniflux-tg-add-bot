@@ -1,19 +1,12 @@
-import sys
-import os
+"""Edge cases for src/url_utils.py: odd URLs, odd HTML, odd Telegram links."""
+
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 import requests
-from bs4 import BeautifulSoup
 
-# Добавляем корень проекта в путь для импорта
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.url_utils import extract_rss_links_from_html, is_valid_rss_url, parse_telegram_link
 
-from url_utils import is_valid_rss_url, parse_telegram_link, extract_rss_links_from_html
-
-# Определяем собственное исключение для тестирования URL
-class URLException(Exception):
-    """Исключение для URL-связанных ошибок."""
-    pass
 
 @pytest.mark.parametrize("url,expected", [
     # Non-HTTP/HTTPS schemes
@@ -33,7 +26,7 @@ class URLException(Exception):
     ("https://example.com/rss/feed?q=test&format=xml#fragment", (True, "https://example.com/rss/feed?q=test&format=xml#fragment")),
     ("https://user:pass@example.com/secure-feed.xml", (True, "https://user:pass@example.com/secure-feed.xml")),
 
-    # Internationalized Domain Names (IDNs)
+    # Internationalized Domain Names (IDNs) — the request fails, nothing is found
     ("https://München.de/feed.xml", (False, [])),
     ("https://правительство.рф/feed.xml", (False, [])),
 
@@ -46,34 +39,27 @@ class URLException(Exception):
     (None, (False, [])),
 ])
 def test_is_valid_rss_url_edge_cases(url, expected):
-    """Test URL validation with various edge cases."""
-    # Mock the actual requests.get to focus on URL validation
-    with patch('url_utils.requests.head') as mock_head:
-        with patch('url_utils.requests.get') as mock_get:
-            if url and (url.startswith("http://") or url.startswith("https://")):
-                # Для HTTP и HTTPS URL, возвращаем успешный ответ
-                mock_response = MagicMock()
-                mock_response.headers = {'Content-Type': 'application/rss+xml'}
-                mock_response.status_code = 200
-                
-                # Mock head возвращает ошибку для IDN
-                if "München" in str(url) or "правительство" in str(url):
-                    mock_head.side_effect = requests.exceptions.RequestException("IDN Error")
-                    # А get возвращает ошибку тоже
-                    mock_get.side_effect = requests.exceptions.RequestException("IDN Error")
-                else:
-                    mock_head.return_value = mock_response
-                    mock_get.return_value = mock_response
+    """URL validation across schemes, malformed input and hostile input."""
+    with patch("src.url_utils.requests.head") as mock_head, \
+         patch("src.url_utils.requests.get") as mock_get:
+        if url and (url.startswith("http://") or url.startswith("https://")):
+            response = MagicMock(
+                status_code=200, headers={"Content-Type": "application/rss+xml"}
+            )
+            if "München" in str(url) or "правительство" in str(url):
+                # An IDN host the transport cannot resolve
+                mock_head.side_effect = requests.exceptions.RequestException("IDN Error")
+                mock_get.side_effect = requests.exceptions.RequestException("IDN Error")
             else:
-                # Для не-HTTP URL или None, возвращаем ошибку
-                mock_head.side_effect = requests.exceptions.RequestException("Invalid URL")
-                mock_get.side_effect = requests.exceptions.RequestException("Invalid URL")
-                
-            # В is_valid_rss_url внутри есть is_url_valid, которая блокирует неправильные схемы
-            result = is_valid_rss_url(url)
-            assert result == expected
+                mock_head.return_value = response
+                mock_get.return_value = response
+        else:
+            mock_head.side_effect = requests.exceptions.RequestException("Invalid URL")
+            mock_get.side_effect = requests.exceptions.RequestException("Invalid URL")
 
-# Обратите внимание на правильный шаблон регулярного выражения для тестов
+        assert is_valid_rss_url(url) == expected
+
+
 @pytest.mark.parametrize("url,expected", [
     # Standard channel URL
     ("t.me/channel_name", "channel_name"),
@@ -83,14 +69,20 @@ def test_is_valid_rss_url_edge_cases(url, expected):
     ("t.me/channel_name/123", "channel_name"),
     ("https://t.me/channel_name/123", "channel_name"),
 
-    # URL with query parameters - регулярка игнорирует часть после ?
+    # A trailing query string / fragment is tolerated
     ("https://t.me/channel_name?query=value", "channel_name"),
+    ("https://t.me/channel_name#anchor", "channel_name"),
 
-    # Private channel URL with invite
-    ("https://t.me/+AbCdEfGhIjK", "+AbCdEfGhIjK"),
+    # Private channel forms
+    ("https://t.me/c/1234567890/55", "1234567890"),
+    ("https://t.me/-1002069358234/1951", "-1002069358234"),
 
-    # Channel URL with s/ prefix (short URL) - s/ не является частью канала
-    ("https://t.me/s/channel_name", "s"),
+    # Invite links are not channels
+    ("https://t.me/+AbCdEfGhIjK", None),
+    ("https://t.me/joinchat/AbCdEfGhIjK", None),
+
+    # The web-preview prefix is not a channel path
+    ("https://t.me/s/channel_name", None),
 
     # Non-Telegram URL
     ("https://example.com", None),
@@ -98,35 +90,23 @@ def test_is_valid_rss_url_edge_cases(url, expected):
     # Malformed Telegram URL
     ("https://t.me/", None),
 
-    # URLs with special characters in channel name
-    ("https://t.me/channel_name-with-hyphens", "channel_name-with-hyphens"),
+    # Special characters in the channel name
+    ("https://t.me/channel_name-with-hyphens", None),
     ("https://t.me/channel_name_with_underscores", "channel_name_with_underscores"),
 
-    # URL with uppercase - согласно коду, регулярка чувствительна к регистру для домена
+    # The domain match is case-sensitive
     ("https://T.ME/CHANNEL_NAME", None),
 ])
 def test_parse_telegram_link_variations(url, expected):
-    """Test parsing different variations of Telegram links."""
-    # Когда мы используем patch для re.search, мы хотим заменить его функциональность
-    # на ту, которая соответствует реальной реализации parse_telegram_link
-    with patch('url_utils.re.search') as mock_search:
-        # Если ожидаем, что результат должен быть None
-        if expected is None:
-            mock_search.return_value = None
-        else:
-            # Создаем мок объекта match с методом group
-            mock_match = MagicMock()
-            mock_match.group.return_value = expected
-            mock_search.return_value = mock_match
-            
-        result = parse_telegram_link(url)
-        assert result == expected
+    """Variations of Telegram links, checked against the real regex."""
+    assert parse_telegram_link(url) == expected
+
 
 @pytest.mark.parametrize("html_content,expected_links", [
     # No links
     ("<html><body>No RSS links here</body></html>", []),
 
-    # Link tag with type attribute
+    # Link tag with an absolute href
     ('''<html><head>
         <link rel="alternate" type="application/rss+xml" title="RSS Feed" href="https://example.com/feed.xml">
       </head></html>''',
@@ -140,13 +120,13 @@ def test_parse_telegram_link_variations(url, expected):
      [{"title": "Main Feed", "href": "https://example.com/feed.xml"},
       {"title": "Atom Feed", "href": "https://example.com/atom.xml"}]),
 
-    # Links without title attribute
+    # A link without a title attribute gets the default title
     ('''<html><head>
         <link rel="alternate" type="application/rss+xml" href="/rss">
       </head></html>''',
      [{"title": "RSS/Atom Feed", "href": "https://example.com/rss"}]),
 
-    # Links with relative URLs of different formats
+    # Relative URLs of different shapes
     ('''<html><head>
         <link rel="alternate" type="application/rss+xml" title="Feed 1" href="feed.xml">
         <link rel="alternate" type="application/rss+xml" title="Feed 2" href="./feed2.xml">
@@ -157,14 +137,9 @@ def test_parse_telegram_link_variations(url, expected):
       {"title": "Feed 3", "href": "https://example.com/feed3.xml"}]),
 ])
 def test_extract_rss_links_variations(html_content, expected_links):
-    """Test finding RSS links in different HTML structures."""
-    base_url = "https://example.com"
-    
-    # Не мокируем ничего, просто передаем HTML контент в функцию
-    result = extract_rss_links_from_html(html_content, base_url)
-    
-    # Сортируем результаты по href для стабильного сравнения
-    result = sorted(result, key=lambda x: x['href'])
-    expected_sorted = sorted(expected_links, key=lambda x: x['href'])
-    
-    assert result == expected_sorted 
+    """Finding RSS links in different HTML structures."""
+    result = extract_rss_links_from_html(html_content, "https://example.com")
+
+    assert sorted(result, key=lambda item: item["href"]) == sorted(
+        expected_links, key=lambda item: item["href"]
+    )

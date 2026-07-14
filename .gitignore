@@ -1,7 +1,21 @@
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-*.pyw
-*.pyz
-*.pywz
+.env
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.swp
+.DS_Store
+logs/
+data/*
+!data/.gitkeep
+# Claude Code agent worktrees — never commit
+.claude/worktrees/
+# test / type-check artifacts
+.coverage
+.pytest_cache/
+.mypy_cache/

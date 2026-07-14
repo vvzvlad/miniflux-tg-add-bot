@@ -1,94 +1,147 @@
-import pytest
-import asyncio
-import sys
+"""Shared test fixtures.
+
+The environment variables must be set BEFORE anything from `src` is imported:
+`src.settings` builds its `settings` object at import time and exits(1) when a
+required variable is missing.
+"""
+
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
 
-# --- Mock Environment Variables (if needed) ---
-# These are needed before importing any modules that use them
-os.environ["MINIFLUX_BASE_URL"] = "http://test.miniflux.local" 
-os.environ["MINIFLUX_USERNAME"] = "test_user"
-os.environ["MINIFLUX_PASSWORD"] = "test_password"
-os.environ["TELEGRAM_TOKEN"] = "test_token"
-os.environ["ADMIN"] = "test_admin"
-os.environ["RSS_BRIDGE_URL"] = "http://test.rssbridge.local/rss/{channel}/test_token"
-os.environ["ACCEPT_CHANNELS_WITHOUT_USERNAME"] = "true"
+# --- Required environment (must precede every `src.*` import) ---------------
+os.environ.setdefault("TELEGRAM_TOKEN", "test_token")
+os.environ.setdefault("ADMIN", "test_admin")
+os.environ.setdefault("MINIFLUX_BASE_URL", "http://test.miniflux.local")
+os.environ.setdefault("MINIFLUX_USERNAME", "test_user")
+os.environ.setdefault("MINIFLUX_PASSWORD", "test_password")
+os.environ.setdefault("RSS_BRIDGE_URL", "http://test.rssbridge.local/rss/{channel}/test_token")
+os.environ.setdefault("ACCEPT_CHANNELS_WITHOUT_USERNAME", "true")
+os.environ.setdefault("LOG_LEVEL", "INFO")
 
-# Adjust sys.path to import from the parent directory (miniflux-tg-add-bot)
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, project_root)
+from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 
-# Note: We're NOT importing modules here that might use these configs
-# Instead, patching will happen before each test
+import pytest  # noqa: E402
+
+import src.handlers.keyboards as keyboards  # noqa: E402
+from src.settings import settings  # noqa: E402
+
+# The flags the fake RSS bridge reports in tests.
+TEST_AVAILABLE_FLAGS = ["fwd", "video", "stream", "donat", "clown", "poll"]
+
+# The RSS bridge template configured for the tests (mirrors RSS_BRIDGE_URL above).
+TEST_RSS_BRIDGE_URL = "http://test.rssbridge.local/rss/{channel}/test_token"
+
+
+@pytest.fixture
+def mock_miniflux_client():
+    """A **synchronous** mock of the Miniflux client.
+
+    Every method is a plain MagicMock, never an AsyncMock: `miniflux.Client` is a
+    synchronous library. Mocking its methods as AsyncMock used to hide a real bug
+    (`await client.delete_feed(...)` in production code) — with a MagicMock such a
+    stray `await` raises TypeError and the test fails loudly, which is the point.
+    """
+    client = MagicMock()
+    client.get_feeds = MagicMock(return_value=[])
+    client.get_feed = MagicMock(return_value={})
+    client.create_feed = MagicMock(return_value=None)
+    client.update_feed = MagicMock(return_value=None)
+    client.delete_feed = MagicMock(return_value=None)
+    client.get_categories = MagicMock(return_value=[])
+    return client
+
 
 @pytest.fixture(autouse=True)
-def mock_config_and_client(mocker):
+def patch_get_client(mock_miniflux_client):
+    """Hand the mock client to every module that resolves it via get_client().
+
+    The client is no longer a module global: handlers call get_client() at call
+    time, so it must be patched in each module where the name is used.
     """
-    Mock config variables and miniflux client AFTER they've been loaded 
-    (they're already set via env vars above)
+    targets = [
+        "src.miniflux_api.get_client",
+        "src.handlers.callbacks.get_client",
+        "src.handlers.commands.get_client",
+        "src.handlers.messages.get_client",
+    ]
+    patchers = [patch(target, return_value=mock_miniflux_client) for target in targets]
+    for patcher in patchers:
+        patcher.start()
+    yield mock_miniflux_client
+    for patcher in patchers:
+        patcher.stop()
+
+
+@pytest.fixture(autouse=True)
+def patch_available_flags():
+    """Serve a fixed flag list instead of calling the real RSS bridge.
+
+    The flag cache is module-level, so it is cleared around every test to keep the
+    tests independent of each other.
     """
-    # Mock config vars to ensure they have test values regardless of env
-    # Use config.VARIABLE_NAME format to patch the actual module variables
-    mocker.patch('config.MINIFLUX_BASE_URL', 'http://test.miniflux.local')
-    mocker.patch('config.TELEGRAM_TOKEN', 'test_token')
-    mocker.patch('config.RSS_BRIDGE_URL', 'http://test.rssbridge.local/rss/{channel}/test_token')
-    mocker.patch('config.ADMIN_USERNAME', 'test_admin')
-    mocker.patch('config.should_accept_channels_without_username', lambda: True)
-    
-    # Create a properly mocked miniflux client
-    mock_client = MagicMock()
-    # Ensure the client mock has necessary methods with async/sync as needed
-    mock_client.get_feeds = MagicMock()
-    mock_client.create_feed = AsyncMock()
-    mock_client.get_feed = MagicMock()
-    mock_client.update_feed = AsyncMock()
-    mock_client.delete_feed = AsyncMock()
-    # Add other methods as needed for tests
-    
-    # Apply the mock directly to config.miniflux_client
-    mocker.patch('config.miniflux_client', mock_client)
-    
-    # Also patch the miniflux_client in any imported modules
-    # We do this to ensure both direct imports and from-imports work
-    mocker.patch('bot.miniflux_client', mock_client)
-    
-    # Return the mock for use in tests
-    yield mock_client
+    keyboards._flags_cache = None
+    with patch(
+        "src.handlers.keyboards.fetch_available_flags",
+        return_value=list(TEST_AVAILABLE_FLAGS),
+    ) as mock_fetch:
+        yield mock_fetch
+    keyboards._flags_cache = None
+
+
+@pytest.fixture
+def admin_settings(monkeypatch):
+    """Settings with predictable values for the handler tests."""
+    monkeypatch.setattr(settings, "admin", "test_admin")
+    monkeypatch.setattr(settings, "rss_bridge_url", TEST_RSS_BRIDGE_URL)
+    monkeypatch.setattr(settings, "miniflux_base_url", "http://test.miniflux.local")
+    monkeypatch.setattr(settings, "accept_channels_without_username", True)
+    return settings
+
 
 @pytest.fixture
 def mock_update():
-    """Creates a mock Telegram Update object."""
+    """A mock Telegram Update carrying both a message and a callback query."""
     update = MagicMock()
-    update.message = MagicMock()  # Changed from AsyncMock to make to_dict synchronous
+
+    # message.to_dict() must stay synchronous: the parser calls it directly.
+    update.message = MagicMock()
     update.message.from_user = MagicMock()
-    update.message.chat = AsyncMock()
+    update.message.from_user.username = "test_admin"
+    update.message.text = None
+    update.message.media_group_id = None
+    update.message.to_dict = MagicMock(return_value={})
     update.message.reply_text = AsyncMock()
+    update.message.chat = MagicMock()
+    update.message.chat.id = 12345
     update.message.chat.send_action = AsyncMock()
-    
-    # Make to_dict specifically a regular MagicMock (not AsyncMock)
-    update.message.to_dict = MagicMock()
-    
-    update.callback_query = AsyncMock()
+
+    update.callback_query = MagicMock()
+    update.callback_query.data = ""
+    update.callback_query.from_user = MagicMock()
+    update.callback_query.from_user.username = "test_admin"
     update.callback_query.answer = AsyncMock()
     update.callback_query.edit_message_text = AsyncMock()
-    update.callback_query.message = AsyncMock()
-    update.callback_query.message.chat = AsyncMock() # Need chat for send_action
+    update.callback_query.message = MagicMock()
+    update.callback_query.message.chat = MagicMock()
+    update.callback_query.message.chat.id = 12345
+    update.callback_query.message.chat.send_action = AsyncMock()
+
+    update.effective_chat = MagicMock()
+    update.effective_chat.id = 12345
+
     return update
+
 
 @pytest.fixture
 def mock_context():
-    """Creates a mock Telegram CallbackContext object."""
+    """A mock Telegram CallbackContext with a real (mutable) user_data dict."""
     context = MagicMock()
     context.user_data = {}
-    context.bot = AsyncMock() # Mock the bot object within context if needed
+    context.bot = AsyncMock()
+    context.error = None
     return context
 
-# We removed pytest_plugins and instead configured in pytest.ini
 
-# Option 1: Set default scopes in pytest.ini (best practice)
-# [pytest]
-# asyncio_mode = strict
-# asyncio_default_fixture_loop_scope = function
-
-# Option 2: Remove custom event_loop fixture and use the built-in one 
-# from pytest_asyncio (removing our custom one below) 
+@pytest.fixture
+def mock_query(mock_update):
+    """Just the callback query — the flag/delete/edit handlers take it directly."""
+    return mock_update.callback_query

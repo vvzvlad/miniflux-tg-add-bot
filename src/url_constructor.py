@@ -1,13 +1,15 @@
+"""Parsing and building of RSS-Bridge feed URLs."""
+
 import urllib.parse
 from typing import Dict, List, Optional
 
-# Assuming extract_channel_from_feed_url is in url_utils
-from url_utils import extract_channel_from_feed_url
+from src.url_utils import extract_channel_from_feed_url
 
-# Define constants for query parameters
+# Query parameter names understood by the bridge
 PARAM_EXCLUDE_FLAGS = "exclude_flags"
 PARAM_EXCLUDE_TEXT = "exclude_text"
 PARAM_MERGE_SECONDS = "merge_seconds"
+
 
 def parse_feed_url(feed_url: str) -> Dict[str, Optional[str | List[str] | int]]:
     """
@@ -31,15 +33,15 @@ def parse_feed_url(feed_url: str) -> Dict[str, Optional[str | List[str] | int]]:
         parsed_url.scheme,
         parsed_url.netloc,
         parsed_url.path,
-        "", "", "" # Remove params, query, fragment for base
+        "", "", ""  # Remove params, query, fragment for base
     ))
 
-    channel_name = extract_channel_from_feed_url(feed_url) # Use existing utility
+    channel_name = extract_channel_from_feed_url(feed_url)
 
     flags = None
     if PARAM_EXCLUDE_FLAGS in query_params:
         flags_str = query_params[PARAM_EXCLUDE_FLAGS][0]
-        if flags_str: # Avoid creating [''] for empty param
+        if flags_str:  # Avoid creating [''] for an empty parameter
             flags = flags_str.split(',')
 
     exclude_text = query_params.get(PARAM_EXCLUDE_TEXT, [None])[0]
@@ -49,7 +51,7 @@ def parse_feed_url(feed_url: str) -> Dict[str, Optional[str | List[str] | int]]:
         try:
             merge_seconds = int(query_params[PARAM_MERGE_SECONDS][0])
         except (ValueError, IndexError):
-            merge_seconds = None # Treat invalid values as None
+            merge_seconds = None  # Treat invalid values as None
 
     return {
         "base_url": base_url,
@@ -62,7 +64,7 @@ def parse_feed_url(feed_url: str) -> Dict[str, Optional[str | List[str] | int]]:
 
 def build_feed_url(
     base_url: str,
-    channel_name: str, # Channel name might be part of the base_url path in some RSS-Bridge setups
+    channel_name: str,  # Channel name might be part of the base_url path in some RSS-Bridge setups
     flags: Optional[List[str]] = None,
     exclude_text: Optional[str] = None,
     merge_seconds: Optional[int] = None
@@ -71,7 +73,7 @@ def build_feed_url(
     Builds an RSS-Bridge feed URL from its components.
 
     Args:
-        base_url: The base URL (e.g., "http://rss-bridge.org/bridge/TelegramBridge").
+        base_url: The base URL (e.g. "http://rss-bridge.org/bridge/TelegramBridge").
                 It might already contain the channel name in the path.
         channel_name: The channel name/ID (used for verification and potentially adding to path if needed).
         flags: A list of flags to include in 'exclude_flags'.
@@ -82,7 +84,7 @@ def build_feed_url(
         The constructed feed URL string.
     """
     # Assume base_url is the final base path including any channel segment if applicable.
-    query_parts = [] # List to hold key=value strings
+    query_parts = []  # List to hold key=value strings
 
     if flags:
         # Join flags with comma, DO NOT URL-encode this value here.
@@ -96,19 +98,15 @@ def build_feed_url(
         query_parts.append(f"{PARAM_EXCLUDE_TEXT}={encoded_text}")
 
     if merge_seconds is not None and merge_seconds > 0:
-        # Value is already a string and doesn't need special encoding
         query_parts.append(f"{PARAM_MERGE_SECONDS}={str(merge_seconds)}")
 
-    # Rebuild the URL
     final_url = base_url
 
     if query_parts:
-        # Join the already processed key=value parts with '&'
         query_string = "&".join(query_parts)
 
-        # Append query string
         parsed_base = urllib.parse.urlparse(final_url)
         separator = "&" if parsed_base.query else "?"
         final_url += separator + query_string
 
-    return final_url 
+    return final_url

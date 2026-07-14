@@ -1,0 +1,36 @@
+# Deploy template. The image is pulled from ghcr.io and is NEVER built on prod
+# (CI builds and pushes it; watchtower auto-updates the running container).
+# All values below are PLACEHOLDERS (XXX / example.com), not real secrets.
+#
+# This is the POLLING-BOT variant: the bot has no inbound port, so there are no
+# networks, no Traefik labels and no healthcheck.
+
+volumes:
+  miniflux_tg_add_bot:
+
+services:
+  miniflux_tg_add_bot:
+    image: ghcr.io/vvzvlad/miniflux-tg-add-bot:latest
+    container_name: miniflux-tg-add-bot
+    restart: always
+    volumes:
+      - miniflux_tg_add_bot:/app/data     # all mutable state survives restart/update
+    environment:
+      TELEGRAM_TOKEN: XXX                 # bot token from @BotFather
+      MINIFLUX_BASE_URL: http://miniflux.example.com
+      # Authenticate with either MINIFLUX_API_KEY, or MINIFLUX_USERNAME + MINIFLUX_PASSWORD
+      MINIFLUX_API_KEY: XXX
+      MINIFLUX_USERNAME: XXX
+      MINIFLUX_PASSWORD: XXX
+      RSS_BRIDGE_URL: http://bridge.example.com/rss/{channel}  # must contain the {channel} placeholder
+      ADMIN: XXX                          # the only telegram username allowed to use the bot
+      ACCEPT_CHANNELS_WITHOUT_USERNAME: "false"
+      LOG_LEVEL: INFO
+      TZ: Europe/Moscow
+    logging:
+      driver: "json-file"
+      options:
+        max-file: 5
+        max-size: 10m
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"   # auto-update the image
