@@ -5,6 +5,7 @@ in asyncio.to_thread() so the event loop is never blocked.
 """
 
 import logging
+import time
 
 import miniflux
 from miniflux import Client, ClientError, ServerError
@@ -13,6 +14,31 @@ from src.settings import settings
 from src.url_constructor import parse_feed_url
 
 _client: Client | None = None
+
+# The feed list barely changes between interactions, but every button press used
+# to re-fetch it. Cache it for a short TTL and invalidate on every mutation so a
+# create/update/delete is reflected immediately.
+_FEEDS_CACHE_TTL_SECONDS = 30
+_feeds_cache: tuple[float, list] | None = None
+
+
+def _get_feeds(client) -> list:
+    """Return the feed list, cached for a short TTL. Only successful fetches are cached."""
+    global _feeds_cache
+    now = time.monotonic()
+    if _feeds_cache is not None:
+        cached_at, feeds = _feeds_cache
+        if now - cached_at < _FEEDS_CACHE_TTL_SECONDS:
+            return feeds
+    feeds = client.get_feeds()   # may raise -> nothing cached
+    _feeds_cache = (time.monotonic(), feeds)
+    return feeds
+
+
+def invalidate_feeds_cache() -> None:
+    """Drop the cached feed list so the next read fetches fresh data."""
+    global _feeds_cache
+    _feeds_cache = None
 
 
 def get_client() -> Client:
@@ -35,6 +61,16 @@ def get_client() -> Client:
             )
         logging.info("Miniflux client initialized successfully.")
     return _client
+
+
+def format_miniflux_error(error) -> str:
+    """Format a Miniflux API error as 'Status: X, Error: Y' for the user."""
+    status_code = getattr(error, 'status_code', 'unknown')
+    try:
+        error_reason = error.get_error_reason()
+    except AttributeError:
+        error_reason = str(error)
+    return f"Status: {status_code}, Error: {error_reason}"
 
 
 def fetch_categories(client):
@@ -64,7 +100,7 @@ def check_feed_exists(client, feed_url):
     """
     try:
         logging.debug(f"Checking if feed exists with URL: {feed_url}")
-        feeds = client.get_feeds()
+        feeds = _get_feeds(client)
         exists = any(feed["feed_url"] == feed_url for feed in feeds)
         logging.info(f"Feed with URL {feed_url} {'exists' if exists else 'does not exist'} in subscriptions.")
         return exists
@@ -83,7 +119,7 @@ def find_feed_by_channel(client, channel_name: str) -> dict | None:
     Scans all feeds and returns the first one whose feed URL parses to a matching
     channel name (case-insensitive), or None if the channel is not subscribed.
     """
-    feeds = client.get_feeds()
+    feeds = _get_feeds(client)
     for feed in feeds:
         feed_url = feed.get("feed_url", "")
         parsed_data = parse_feed_url(feed_url)
@@ -100,15 +136,11 @@ def update_feed_url(feed_id: int, new_url: str, client) -> tuple[bool, str | Non
     """Updates the URL for a specific feed."""
     try:
         client.update_feed(feed_id, feed_url=new_url)
+        invalidate_feeds_cache()
         logging.info(f"Successfully updated feed URL for feed ID {feed_id} to: {new_url}")
         return True, new_url, None
     except (ClientError, ServerError) as error:
-        status_code = getattr(error, 'status_code', 'unknown')
-        try:
-            error_reason = error.get_error_reason()
-        except AttributeError:
-            error_reason = str(error)
-        error_message = f"Status: {status_code}, Error: {error_reason}"
+        error_message = format_miniflux_error(error)
         logging.error(f"Miniflux API error while updating URL for feed {feed_id}: {error_message}")
         return False, None, error_message
     except Exception as e:
@@ -120,20 +152,23 @@ def delete_feed(client, feed_id: int) -> tuple[bool, str | None]:
     """Delete a feed. Returns (success, error_message)."""
     try:
         client.delete_feed(feed_id)
+        invalidate_feeds_cache()
         logging.info(f"Successfully deleted feed ID {feed_id}")
         return True, None
     except (ClientError, ServerError) as error:
-        status_code = getattr(error, 'status_code', 'unknown')
-        try:
-            error_reason = error.get_error_reason()
-        except AttributeError:
-            error_reason = str(error)
-        error_message = f"Status: {status_code}, Error: {error_reason}"
+        error_message = format_miniflux_error(error)
         logging.error(f"Miniflux API error while deleting feed {feed_id}: {error_message}")
         return False, error_message
     except Exception as e:
         logging.error(f"Unexpected error deleting feed {feed_id}: {e}", exc_info=True)
         return False, str(e)
+
+
+def create_feed(client, feed_url: str, category_id: int):
+    """Create a feed and invalidate the cached feed list."""
+    result = client.create_feed(feed_url, category_id=category_id)
+    invalidate_feeds_cache()
+    return result
 
 
 def get_channels_by_category(client: Client, rss_bridge_url: str | None) -> dict[str, list[dict]]:
@@ -153,7 +188,7 @@ def get_channels_by_category(client: Client, rss_bridge_url: str | None) -> dict
     """
     try:
         logging.info("Fetching all feeds to identify bridge channels.")
-        feeds = client.get_feeds()
+        feeds = _get_feeds(client)
     except Exception as e:
         logging.error(f"Failed to fetch feeds from Miniflux: {e}", exc_info=True)
         raise  # Re-raise the exception to be handled by the caller
@@ -213,6 +248,7 @@ def get_channels_by_category(client: Client, rss_bridge_url: str | None) -> dict
         grouped_channels.setdefault(cat_title, []).append({
             "id": feed["id"],
             "title": feed["title"],
+            "channel": feed["channel"],
             "flags": feed["flags"],
             "excluded_text": feed["excluded_text"],
             "merge_seconds": feed["merge_seconds"],

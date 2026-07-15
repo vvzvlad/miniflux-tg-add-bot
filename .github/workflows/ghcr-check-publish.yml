@@ -26,6 +26,11 @@ jobs:
     - name: Install dependencies
       run: pip install -r requirements-dev.txt
 
+    - name: Lint and type-check
+      run: |
+        ruff check .
+        mypy src
+
     - name: Run tests
       env:
         # Required ENV so that importing src.settings succeeds

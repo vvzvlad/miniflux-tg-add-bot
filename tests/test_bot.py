@@ -2,11 +2,9 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from telegram import Update
 
 from src.bot import ERROR_MESSAGE, build_application, error_handler, post_init
-
 
 # --- post_init --------------------------------------------------------------
 

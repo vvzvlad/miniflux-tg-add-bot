@@ -2,18 +2,21 @@
 
 import asyncio
 import logging
+import urllib.parse
 
 from miniflux import ClientError, ServerError
 from telegram import Update
 from telegram.ext import CallbackContext
 
-from src.handlers.common import safe_edit_message
+from src.handlers.common import clear_edit_state, safe_edit_message
 from src.handlers.keyboards import build_category_keyboard, build_options_view
 from src.miniflux_api import (
     check_feed_exists,
+    create_feed,
     delete_feed,
     fetch_categories,
     find_feed_by_channel,
+    format_miniflux_error,
     get_client,
     update_feed_url,
 )
@@ -28,16 +31,6 @@ a*: 0 or more, a+: 1 or more, a?: 0 or 1
 \\w — word, \\W — not word
 [ABC] — character A, B or C, [^ABC] — not A, B or C
             """
-
-
-def _describe_miniflux_error(error: Exception) -> str:
-    """Format a Miniflux API error for the user."""
-    status_code = getattr(error, 'status_code', 'unknown')
-    try:
-        error_reason = error.get_error_reason()
-    except AttributeError:
-        error_reason = str(error)
-    return f"Status: {status_code}, Error: {error_reason}"
 
 
 async def _handle_flag_toggle(query, _context: CallbackContext, action: str, flag: str, channel_name: str):
@@ -224,7 +217,7 @@ async def _handle_category_selection(query, context: CallbackContext, data: str)
         await query.message.chat.send_action("typing")
         try:
             logging.info(f"Subscribing to direct RSS feed '{feed_url}' in category {cat_id}")
-            await asyncio.to_thread(client.create_feed, feed_url, category_id=cat_id)
+            await asyncio.to_thread(create_feed, client, feed_url, cat_id)
             # Clear the pending URL only after a successful subscription, so a failed
             # attempt can be retried without the user re-sending the link.
             context.user_data.pop("direct_rss_url", None)
@@ -235,7 +228,7 @@ async def _handle_category_selection(query, context: CallbackContext, data: str)
                 f"category '{category_title.strip()}'",
             )
         except (ClientError, ServerError) as error:
-            error_message = _describe_miniflux_error(error)
+            error_message = format_miniflux_error(error)
             logging.error(f"Miniflux API error while subscribing to feed '{feed_url}': {error_message}")
             await safe_edit_message(query, f"Failed to subscribe to RSS feed '{feed_url}': {error_message}")
         except Exception as error:
@@ -250,12 +243,12 @@ async def _handle_category_selection(query, context: CallbackContext, data: str)
         return
 
     # The bridge URL template is validated at startup, so the placeholder is always present.
-    feed_url = settings.rss_bridge_url.replace("{channel}", channel_title)
+    feed_url = settings.rss_bridge_url.replace("{channel}", urllib.parse.quote(channel_title, safe=""))
 
     await query.message.chat.send_action("typing")
     try:
         logging.info(f"Subscribing to feed '{feed_url}' in category {cat_id}")
-        await asyncio.to_thread(client.create_feed, feed_url, category_id=cat_id)
+        await asyncio.to_thread(create_feed, client, feed_url, cat_id)
         context.user_data.pop("channel_title", None)
         category_title = context.user_data.get("categories", {}).get(cat_id, "Unknown")
         await safe_edit_message(
@@ -264,7 +257,7 @@ async def _handle_category_selection(query, context: CallbackContext, data: str)
             f"added to category '{category_title.strip()}'",
         )
     except (ClientError, ServerError) as error:
-        error_message = _describe_miniflux_error(error)
+        error_message = format_miniflux_error(error)
         logging.error(f"Miniflux API error while subscribing to feed '{feed_url}': {error_message}")
         await safe_edit_message(query, f"Failed to subscribe to RSS feed '{feed_url}': {error_message}")
     except Exception as error:
@@ -293,6 +286,40 @@ async def _handle_delete_channel(query, channel_name: str):
     except Exception as error:
         logging.error(f"Failed to delete feed for {channel_name}: {error}", exc_info=True)
         await safe_edit_message(query, f"Failed to delete channel: {str(error)}")
+
+
+async def _handle_manage_channel(query, _context: CallbackContext, channel_name: str):
+    """Open the options view for a subscribed channel (from the /list manage button).
+
+    Mirrors the "already subscribed" branch of _handle_telegram_channel, but edits
+    the /list message in place instead of sending a new one.
+    """
+    client = get_client()
+    await query.message.chat.send_action("typing")
+    try:
+        target_feed = await asyncio.to_thread(find_feed_by_channel, client, channel_name)
+        if not target_feed:
+            await safe_edit_message(query, f"Channel @{channel_name} not found in subscriptions.")
+            return
+
+        feed_id = target_feed.get("id")
+        current_feed = await asyncio.to_thread(client.get_feed, feed_id)
+        parsed_current = parse_feed_url(current_feed.get("feed_url", ""))
+        current_flags = parsed_current.get("flags") or []
+        current_merge_seconds = parsed_current.get("merge_seconds")
+
+        reply_markup, flags_note = await build_options_view(
+            channel_name, current_flags, current_merge_seconds
+        )
+        await safe_edit_message(
+            query,
+            f"Options for @{channel_name}. Choose an action:{flags_note}",
+            reply_markup=reply_markup,
+        )
+
+    except Exception as error:
+        logging.error(f"Failed to open management view for {channel_name}: {error}", exc_info=True)
+        await safe_edit_message(query, f"Failed to open options for @{channel_name}: {str(error)}")
 
 
 async def _handle_edit_regex(query, context: CallbackContext, channel_name: str):
@@ -344,8 +371,7 @@ async def _handle_edit_regex(query, context: CallbackContext, channel_name: str)
 
     except Exception as error:
         logging.error(f"Failed during edit_regex preparation for {channel_name}: {error}", exc_info=True)
-        for key in ('state', 'editing_regex_for_channel', 'editing_feed_id'):
-            context.user_data.pop(key, None)
+        clear_edit_state(context)
         await safe_edit_message(query, f"Failed to start regex edit: {str(error)}")
 
 
@@ -388,8 +414,7 @@ async def _handle_edit_merge_time(query, context: CallbackContext, channel_name:
 
     except Exception as error:
         logging.error(f"Failed during edit_merge_time preparation for {channel_name}: {error}", exc_info=True)
-        for key in ('state', 'editing_merge_time_for_channel', 'editing_feed_id'):
-            context.user_data.pop(key, None)
+        clear_edit_state(context)
         await safe_edit_message(query, f"Failed to start merge time edit: {str(error)}")
 
 
@@ -423,6 +448,9 @@ async def button_callback(update: Update, context: CallbackContext):
         except Exception as error:
             logging.error(f"Unexpected error processing flag callback '{data}': {error}", exc_info=True)
             await safe_edit_message(query, "An unexpected error occurred processing the flag action.")
+
+    elif data.startswith("manage|"):
+        await _handle_manage_channel(query, context, data.split("|", 1)[1])
 
     elif data.startswith("delete|"):
         await _handle_delete_channel(query, data.split("|", 1)[1])

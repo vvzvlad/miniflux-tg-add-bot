@@ -1,0 +1,41 @@
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# Conservative, high-signal rule set. "UP" is intentionally left out: it would
+# rewrite type annotations across pre-existing, otherwise-untouched modules.
+select = ["E", "F", "W", "I", "B"]
+# E501 (line length) is not enforced: the codebase predates this gate and has
+# several long log/data lines; reformatting them all is out of scope here.
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+# Non-strict, first-time retrofit of type checking onto a codebase that predates
+# it. Checks are enabled globally so genuinely new type errors (undefined names,
+# wrong arg counts, bad returns, attribute typos, Optional misuse) are caught
+# everywhere; the known retrofit noise is silenced per-module below rather than
+# project-wide. Strict mode is intentionally NOT enabled.
+
+# python-telegram-bot types update.message / context.user_data / query.data as
+# Optional, so the handlers (which access them everywhere, runtime-guarded) trip
+# union-attr / index. parse_feed_url returns a deliberately loose dict whose
+# values flow into narrower parameters, producing arg-type / assignment /
+# var-annotated. Both are retrofit noise limited to the handler package.
+[[tool.mypy.overrides]]
+module = "src.handlers.*"
+disable_error_code = ["union-attr", "index", "arg-type", "assignment", "var-annotated"]
+
+# find_feed_by_channel calls .lower() on the loosely-typed channel_name from
+# parse_feed_url (guarded at runtime) -> union-attr.
+[[tool.mypy.overrides]]
+module = "src.miniflux_api"
+disable_error_code = ["union-attr"]
+
+# A BaseSettings subclass is callable with no args, but mypy sees type[Settings]
+# where load_settings_or_exit expects Callable[[], Settings] -> a false arg-type.
+[[tool.mypy.overrides]]
+module = "src.settings"
+disable_error_code = ["arg-type"]

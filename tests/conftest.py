@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 import pytest  # noqa: E402
 
 import src.handlers.keyboards as keyboards  # noqa: E402
+import src.miniflux_api as miniflux_api  # noqa: E402
 from src.settings import settings  # noqa: E402
 
 # The flags the fake RSS bridge reports in tests.
@@ -85,6 +86,14 @@ def patch_available_flags():
     ) as mock_fetch:
         yield mock_fetch
     keyboards._flags_cache = None
+
+
+@pytest.fixture(autouse=True)
+def reset_feeds_cache():
+    """Reset the module-level feed-list cache around every test to keep them isolated."""
+    miniflux_api._feeds_cache = None
+    yield
+    miniflux_api._feeds_cache = None
 
 
 @pytest.fixture

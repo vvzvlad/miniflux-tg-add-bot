@@ -7,7 +7,7 @@ import pytest
 from miniflux import ClientError
 
 from src.handlers.callbacks import _handle_flag_toggle, button_callback
-from src.handlers.commands import list_channels, start
+from src.handlers.commands import cancel, list_channels, start
 from src.handlers.messages import (
     _handle_awaiting_merge_time,
     _handle_awaiting_regex,
@@ -49,6 +49,66 @@ async def test_start_non_admin(mock_update, mock_context):
 
     mock_update.message.reply_text.assert_called_once()
     assert "Access denied" in mock_update.message.reply_text.call_args[0][0]
+
+
+async def test_start_clears_edit_state(mock_update, mock_context):
+    """Running /start leaves a stuck regex / merge edit flow."""
+    mock_context.user_data = {
+        "state": "awaiting_merge_time",
+        "editing_merge_time_for_channel": "test_channel",
+        "editing_feed_id": 7,
+    }
+
+    await start(mock_update, mock_context)
+
+    assert "state" not in mock_context.user_data
+    assert "editing_merge_time_for_channel" not in mock_context.user_data
+    assert "editing_feed_id" not in mock_context.user_data
+
+
+# --- /cancel ----------------------------------------------------------------
+
+
+async def test_cancel_while_editing_clears_state(mock_update, mock_context):
+    mock_context.user_data = {
+        "state": "awaiting_regex",
+        "editing_regex_for_channel": "test_channel",
+        "editing_feed_id": 42,
+    }
+
+    await cancel(mock_update, mock_context)
+
+    assert "state" not in mock_context.user_data
+    assert "editing_regex_for_channel" not in mock_context.user_data
+    assert "editing_feed_id" not in mock_context.user_data
+    mock_update.message.reply_text.assert_called_once_with("Cancelled. No changes were made.")
+
+
+async def test_cancel_with_no_state(mock_update, mock_context):
+    await cancel(mock_update, mock_context)
+
+    mock_update.message.reply_text.assert_called_once_with("Nothing to cancel.")
+
+
+async def test_cancel_non_admin_leaves_state_untouched(mock_update, mock_context):
+    mock_update.message.from_user.username = "not_admin"
+    mock_context.user_data = {"state": "awaiting_regex"}
+
+    await cancel(mock_update, mock_context)
+
+    assert mock_context.user_data.get("state") == "awaiting_regex"
+    mock_update.message.reply_text.assert_called_once_with("Access denied. Only admin can use this bot.")
+
+
+async def test_list_clears_edit_state(mock_update, mock_context):
+    """Running /list leaves a stuck regex / merge edit flow."""
+    mock_context.user_data = {"state": "awaiting_regex", "editing_feed_id": 7}
+
+    with patch("src.handlers.commands.get_channels_by_category", return_value={}):
+        await list_channels(mock_update, mock_context)
+
+    assert "state" not in mock_context.user_data
+    assert "editing_feed_id" not in mock_context.user_data
 
 
 # --- handle_message: forwards -----------------------------------------------
@@ -213,6 +273,8 @@ async def test_list_channels_success(mock_update, mock_context, mock_miniflux_cl
     assert "📁 Category A" in cat_a_args[0]
     assert "• channel_one, flags: #noads #images" in cat_a_args[0]
     assert "• channel_two, regex: filter this" in cat_a_args[0]
+    # merge_seconds is rendered as a suffix after the regex
+    assert "• channel_two, regex: filter this, merge: 300s" in cat_a_args[0]
     # The listing is plain text now: no MarkdownV2, so nothing needs escaping
     assert "parse_mode" not in cat_a_kwargs
 
@@ -257,6 +319,58 @@ async def test_list_channels_api_error(mock_update, mock_context):
     error_message = mock_update.message.reply_text.call_args[0][0]
     assert "Failed to list channels" in error_message
     assert str(api_error) in error_message
+
+
+# --- Interactive /list: manage buttons --------------------------------------
+
+
+async def test_list_channels_attaches_manage_buttons(mock_update, mock_context, mock_miniflux_client):
+    """Each feed carrying a channel gets a manage button keyed by that channel."""
+    channel_data = {
+        "News": [
+            {"title": "Chan One", "channel": "chan_one", "flags": [], "excluded_text": None, "merge_seconds": None},
+            {"title": "Chan Two", "channel": "chan_two", "flags": [], "excluded_text": None, "merge_seconds": None},
+        ],
+    }
+
+    with patch("src.handlers.commands.get_channels_by_category", return_value=channel_data):
+        await list_channels(mock_update, mock_context)
+
+    # Header + one category message
+    assert mock_update.message.reply_text.call_count == 2
+    _cat_args, cat_kwargs = mock_update.message.reply_text.call_args_list[1]
+    reply_markup = cat_kwargs["reply_markup"]
+
+    callbacks = [btn.callback_data for row in reply_markup.inline_keyboard for btn in row]
+    assert callbacks == ["manage|chan_one", "manage|chan_two"]
+    texts = [btn.text for row in reply_markup.inline_keyboard for btn in row]
+    assert texts == ["⚙️ Chan One", "⚙️ Chan Two"]
+
+
+async def test_manage_channel_callback_opens_options(mock_update, mock_context, mock_miniflux_client):
+    """The manage callback resolves the feed and edits the message to the options view."""
+    mock_update.callback_query.data = "manage|test_channel"
+    existing_feed = {"id": 77, "feed_url": feed_url_for("test_channel", "?exclude_flags=fwd")}
+    mock_miniflux_client.get_feeds.return_value = [existing_feed]
+    mock_miniflux_client.get_feed.return_value = existing_feed
+
+    await button_callback(mock_update, mock_context)
+
+    mock_update.callback_query.edit_message_text.assert_called_once()
+    args, kwargs = mock_update.callback_query.edit_message_text.call_args
+    assert "Options for @test_channel" in args[0]
+    assert kwargs["reply_markup"] is not None
+
+
+async def test_manage_channel_callback_not_found(mock_update, mock_context, mock_miniflux_client):
+    """A manage button for an unsubscribed channel reports it as not found."""
+    mock_update.callback_query.data = "manage|ghost"
+    mock_miniflux_client.get_feeds.return_value = []
+
+    await button_callback(mock_update, mock_context)
+
+    mock_update.callback_query.edit_message_text.assert_called_once()
+    assert "not found in subscriptions" in mock_update.callback_query.edit_message_text.call_args[0][0]
 
 
 # --- Flag toggling ----------------------------------------------------------

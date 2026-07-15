@@ -47,6 +47,11 @@ env: ## Create .env from the template if it does not exist
 test: install ## Run the test suite (auto-creates .venv if missing)
 	$(PYTEST)
 
+.PHONY: lint
+lint: install ## Run ruff and mypy static checks
+	$(VENV)/bin/ruff check src tests
+	$(VENV)/bin/mypy src
+
 .PHONY: run
 run: install ## Run the application (auto-creates .venv if missing)
 	$(PY) main.py

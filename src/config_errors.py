@@ -43,4 +43,5 @@ def load_settings_or_exit(factory: Callable[[], T]) -> T:
         lines.append("")
         lines.append("Set them in .env (see .env.example) and try again.")
         print("\n".join(lines), file=sys.stderr)
-        raise SystemExit(1)
+        # The formatted message above is the whole point; the raw traceback adds noise.
+        raise SystemExit(1) from None

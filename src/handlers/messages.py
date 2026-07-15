@@ -8,7 +8,7 @@ from typing import NamedTuple
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackContext
 
-from src.handlers.common import ensure_admin
+from src.handlers.common import clear_edit_state, ensure_admin
 from src.handlers.keyboards import build_category_keyboard, build_options_view
 from src.miniflux_api import (
     check_feed_exists,
@@ -36,12 +36,6 @@ class ParsedMessage(NamedTuple):
     html_rss_links: list | None = None
 
 
-def _clear_edit_state(context: CallbackContext) -> None:
-    """Drop the keys used by the regex / merge time edit flows."""
-    for key in ('state', 'editing_regex_for_channel', 'editing_merge_time_for_channel', 'editing_feed_id'):
-        context.user_data.pop(key, None)
-
-
 async def _reply_with_options_keyboard(update: Update, channel_name: str, feed_id: int, text: str) -> None:
     """Re-fetch the feed and show the options keyboard for the channel."""
     try:
@@ -57,6 +51,36 @@ async def _reply_with_options_keyboard(update: Update, channel_name: str, feed_i
         logging.error(f"Failed to fetch flags/show keyboard for {channel_name}: {error}")
 
 
+# Sentinel: a caller that does not pass a field keeps the feed's current value.
+_KEEP = object()
+
+
+async def _rebuild_and_update_feed(client, feed_id, channel_name, *, exclude_text=_KEEP, merge_seconds=_KEEP):
+    """Fetch feed, override one field in its URL, push the update.
+
+    Returns (status, error_message). status is one of:
+    'ok' | 'no_url' | 'no_base_url' | 'update_failed'. error_message is set for 'update_failed'.
+    The get_feed / update calls may raise: the caller catches those.
+    """
+    current_feed_data = await asyncio.to_thread(client.get_feed, feed_id)
+    current_url = current_feed_data.get("feed_url", "")
+    if not current_url:
+        return ("no_url", None)
+    parsed = parse_feed_url(current_url)
+    base = parsed.get("base_url")
+    if not base:
+        return ("no_base_url", None)
+    new_url = build_feed_url(
+        base_url=base,
+        channel_name=channel_name,
+        flags=parsed.get("flags"),
+        exclude_text=parsed.get("exclude_text") if exclude_text is _KEEP else exclude_text,
+        merge_seconds=parsed.get("merge_seconds") if merge_seconds is _KEEP else merge_seconds,
+    )
+    success, _url, err = await asyncio.to_thread(update_feed_url, feed_id, new_url, client)
+    return ("ok", None) if success else ("update_failed", err)
+
+
 async def _handle_awaiting_regex(update: Update, context: CallbackContext):
     """Handles the logic when the bot is awaiting regex input."""
     msg = update.message
@@ -65,7 +89,7 @@ async def _handle_awaiting_regex(update: Update, context: CallbackContext):
     new_regex_raw = msg.text.strip() if msg.text else ""
 
     # Clean up state regardless of success/failure below
-    _clear_edit_state(context)
+    clear_edit_state(context)
     logging.info(f"Processing new regex for channel {channel_name} (feed ID: {feed_id}). State cleared.")
 
     if not channel_name or not feed_id:
@@ -75,60 +99,43 @@ async def _handle_awaiting_regex(update: Update, context: CallbackContext):
 
     await msg.chat.send_action("typing")
 
+    # '-' removes the regex filter
+    remove_regex = new_regex_raw.lower() in ['-']
+    regex_to_store = None if remove_regex or not new_regex_raw else new_regex_raw
+
     try:
         client = get_client()
-        current_feed_data = await asyncio.to_thread(client.get_feed, feed_id)
-        current_url = current_feed_data.get("feed_url", "")
-        if not current_url:
+        status, error_message = await _rebuild_and_update_feed(
+            client, feed_id, channel_name, exclude_text=regex_to_store
+        )
+
+        if status == "no_url":
             logging.error(f"Could not retrieve current URL for feed {feed_id} ({channel_name}) before updating regex.")
             await msg.reply_text("Error: Could not retrieve current feed URL. Cannot update regex.")
             return
-
-        logging.info(f"Current URL for {channel_name} (feed ID: {feed_id}): {current_url}")
-
-        parsed_data = parse_feed_url(current_url)
-
-        # '-' removes the regex filter
-        remove_regex = new_regex_raw.lower() in ['-']
-        regex_to_store = None if remove_regex or not new_regex_raw else new_regex_raw
-
-        base_url_for_build = parsed_data.get("base_url")
-        if not base_url_for_build:
-            logging.error(f"Could not extract base URL from {current_url}")
+        if status == "no_base_url":
+            logging.error(f"Could not extract base URL for feed {feed_id} ({channel_name})")
             await msg.reply_text("Internal error: could not determine base URL.")
             return
-
-        new_url = build_feed_url(
-            base_url=base_url_for_build,
-            channel_name=channel_name,
-            flags=parsed_data.get("flags"),  # Keep existing flags
-            exclude_text=regex_to_store,  # Set the new regex value (or None to remove)
-            merge_seconds=parsed_data.get("merge_seconds"),  # Keep existing merge time
-        )
-
-        logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
-
-        success, _updated_url, error_message = await asyncio.to_thread(
-            update_feed_url, feed_id, new_url, client
-        )
-
-        if success:
-            if remove_regex or not regex_to_store:
-                await msg.reply_text(f"Regex filter removed for channel @{channel_name}.")
-            else:
-                await msg.reply_text(f"Regex for channel @{channel_name} updated to: {regex_to_store}")
-
-            await _reply_with_options_keyboard(
-                update, channel_name, feed_id, f"Updated options for @{channel_name}. Choose an action:"
-            )
-        else:
+        if status == "update_failed":
             logging.error(
                 f"Failed to update feed URL for {channel_name} (feed ID: {feed_id}) with new regex. "
-                f"Error: {error_message}. Attempted URL: {new_url}"
+                f"Error: {error_message}"
             )
             await msg.reply_text(
                 f"Failed to update regex for channel @{channel_name}. Miniflux error: {error_message}"
             )
+            return
+
+        # status == "ok"
+        if remove_regex or not regex_to_store:
+            await msg.reply_text(f"Regex filter removed for channel @{channel_name}.")
+        else:
+            await msg.reply_text(f"Regex for channel @{channel_name} updated to: {regex_to_store}")
+
+        await _reply_with_options_keyboard(
+            update, channel_name, feed_id, f"Updated options for @{channel_name}. Choose an action:"
+        )
 
     except Exception as error:
         logging.error(f"Error processing new regex for {channel_name}: {error}", exc_info=True)
@@ -143,7 +150,7 @@ async def _handle_awaiting_merge_time(update: Update, context: CallbackContext):
     new_merge_time_raw = msg.text.strip() if msg.text else ""
 
     if not channel_name or not feed_id:
-        _clear_edit_state(context)
+        clear_edit_state(context)
         logging.error("State 'awaiting_merge_time' was set, but channel_name or feed_id missing from context.")
         await msg.reply_text("Error: Missing context for merge time update. Please try editing again.")
         return
@@ -173,64 +180,48 @@ async def _handle_awaiting_merge_time(update: Update, context: CallbackContext):
     else:
         logging.info(f"Received new merge time for {channel_name}: {new_merge_seconds_to_set} seconds.")
 
-    _clear_edit_state(context)
+    clear_edit_state(context)
     logging.info(f"Processing new merge time for channel {channel_name} (feed ID: {feed_id}). State cleared.")
 
     await msg.chat.send_action("typing")
 
     try:
         client = get_client()
-        current_feed_data = await asyncio.to_thread(client.get_feed, feed_id)
-        current_url = current_feed_data.get("feed_url", "")
-        if not current_url:
+        status, error_message = await _rebuild_and_update_feed(
+            client, feed_id, channel_name, merge_seconds=new_merge_seconds_to_set
+        )
+
+        if status == "no_url":
             logging.error(
                 f"Could not retrieve current URL for feed {feed_id} ({channel_name}) before updating merge time."
             )
             await msg.reply_text("Error: Could not retrieve current feed URL. Cannot update merge time.")
             return
-
-        logging.info(f"Current URL for {channel_name} (feed ID: {feed_id}): {current_url}")
-
-        parsed_data = parse_feed_url(current_url)
-        base_url_for_build = parsed_data.get("base_url")
-        if not base_url_for_build:
-            logging.error(f"Could not extract base URL from {current_url}")
+        if status == "no_base_url":
+            logging.error(f"Could not extract base URL for feed {feed_id} ({channel_name})")
             await msg.reply_text("Internal error: could not determine base URL.")
             return
-
-        new_url = build_feed_url(
-            base_url=base_url_for_build,
-            channel_name=channel_name,
-            flags=parsed_data.get("flags"),  # Keep existing flags
-            exclude_text=parsed_data.get("exclude_text"),  # Keep existing regex
-            merge_seconds=new_merge_seconds_to_set,  # Set the new merge time (or None)
-        )
-
-        logging.info(f"Constructed new URL for {channel_name} (feed ID: {feed_id}): {new_url}")
-
-        success, _updated_url, error_message = await asyncio.to_thread(
-            update_feed_url, feed_id, new_url, client
-        )
-
-        if success:
-            if new_merge_seconds_to_set is None:
-                await msg.reply_text(f"Merge time filter removed for channel @{channel_name}.")
-            else:
-                await msg.reply_text(
-                    f"Merge time for channel @{channel_name} updated to: {new_merge_seconds_to_set} seconds."
-                )
-
-            await _reply_with_options_keyboard(
-                update, channel_name, feed_id, f"Updated options for @{channel_name}. Choose an action:"
-            )
-        else:
+        if status == "update_failed":
             logging.error(
                 f"Failed to update feed URL for {channel_name} (feed ID: {feed_id}) with new merge time. "
-                f"Error: {error_message}. Attempted URL: {new_url}"
+                f"Error: {error_message}"
             )
             await msg.reply_text(
                 f"Failed to update merge time for channel @{channel_name}. Miniflux error: {error_message}"
             )
+            return
+
+        # status == "ok"
+        if new_merge_seconds_to_set is None:
+            await msg.reply_text(f"Merge time filter removed for channel @{channel_name}.")
+        else:
+            await msg.reply_text(
+                f"Merge time for channel @{channel_name} updated to: {new_merge_seconds_to_set} seconds."
+            )
+
+        await _reply_with_options_keyboard(
+            update, channel_name, feed_id, f"Updated options for @{channel_name}. Choose an action:"
+        )
 
     except Exception as error:
         logging.error(f"Error processing new merge time for {channel_name}: {error}", exc_info=True)

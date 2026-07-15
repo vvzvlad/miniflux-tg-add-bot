@@ -10,6 +10,12 @@ from src.settings import is_admin
 ACCESS_DENIED_MESSAGE = "Access denied. Only admin can use this bot."
 
 
+def clear_edit_state(context) -> None:
+    """Drop the keys used by the regex / merge time edit flows."""
+    for key in ('state', 'editing_regex_for_channel', 'editing_merge_time_for_channel', 'editing_feed_id'):
+        context.user_data.pop(key, None)
+
+
 async def ensure_admin(update: Update, action: str) -> bool:
     """Check that the message comes from the admin, replying with a refusal if not."""
     user = update.message.from_user if update.message else None

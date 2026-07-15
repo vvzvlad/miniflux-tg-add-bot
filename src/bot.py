@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 from src.handlers.callbacks import button_callback
-from src.handlers.commands import list_channels, start
+from src.handlers.commands import cancel, list_channels, start
 from src.handlers.messages import handle_message
 from src.settings import settings
 
@@ -27,6 +27,7 @@ async def post_init(application: Application) -> None:
         commands = [
             ("start", "Start working with the bot"),
             ("list", "Show list of subscribed channels"),
+            ("cancel", "Cancel the current edit"),
         ]
         await application.bot.set_my_commands(commands)
         logging.info("Bot commands have been set up successfully")
@@ -60,6 +61,7 @@ def build_application() -> Application:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("list", list_channels))
+    application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)

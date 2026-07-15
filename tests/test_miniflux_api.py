@@ -7,7 +7,9 @@ import requests
 from miniflux import Client
 
 from src.miniflux_api import (
+    _get_feeds,
     check_feed_exists,
+    create_feed,
     delete_feed,
     fetch_categories,
     find_feed_by_channel,
@@ -347,6 +349,64 @@ def test_get_channels_by_category_parse_feed_url_error(mocker, client):
 
     assert mock_parse_feed_url.call_count == 2
     assert len(result["Category X"]) == 1
+
+
+# --- Feed list cache --------------------------------------------------------
+
+
+def test_get_feeds_cached_within_ttl(client):
+    """Two reads within the TTL hit the client only once."""
+    client.get_feeds.return_value = [{"id": 1, "feed_url": "http://b/rss/a"}]
+
+    first = _get_feeds(client)
+    second = _get_feeds(client)
+
+    assert first == second
+    client.get_feeds.assert_called_once()
+
+
+def test_get_feeds_not_cached_on_error(client):
+    """A failed fetch is not cached: the next read retries."""
+    client.get_feeds.side_effect = [RuntimeError("boom"), [{"id": 1}]]
+
+    with pytest.raises(RuntimeError):
+        _get_feeds(client)
+
+    # Nothing was cached, so the second read re-fetches and succeeds
+    assert _get_feeds(client) == [{"id": 1}]
+    assert client.get_feeds.call_count == 2
+
+
+def test_update_feed_url_invalidates_cache(client):
+    """A successful update drops the cache so the next read is fresh."""
+    client.get_feeds.return_value = [{"id": 1}]
+    _get_feeds(client)  # populate the cache
+
+    update_feed_url(1, "http://new/url", client)
+
+    _get_feeds(client)  # must re-fetch after invalidation
+    assert client.get_feeds.call_count == 2
+
+
+def test_delete_feed_invalidates_cache(client):
+    client.get_feeds.return_value = [{"id": 1}]
+    _get_feeds(client)
+
+    delete_feed(client, 1)
+
+    _get_feeds(client)
+    assert client.get_feeds.call_count == 2
+
+
+def test_create_feed_invalidates_cache(client):
+    client.get_feeds.return_value = [{"id": 1}]
+    _get_feeds(client)
+
+    create_feed(client, "http://new/feed", 5)
+
+    _get_feeds(client)
+    assert client.get_feeds.call_count == 2
+    client.create_feed.assert_called_once_with("http://new/feed", category_id=5)
 
 
 # --- Client construction ----------------------------------------------------

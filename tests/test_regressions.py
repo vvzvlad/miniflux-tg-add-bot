@@ -11,12 +11,13 @@ import pytest
 from telegram.error import BadRequest
 
 import src.handlers.keyboards as keyboards
-# Bound at import time, before the autouse patch_available_flags fixture replaces
-# the module attribute — this stays the genuine function.
-from src.handlers.keyboards import fetch_available_flags as real_fetch_available_flags
 from src.handlers.callbacks import _handle_delete_channel, _handle_flag_toggle, button_callback
 from src.handlers.common import safe_edit_message
 from src.handlers.keyboards import build_options_view, create_flag_keyboard, get_available_flags
+
+# Bound at import time, before the autouse patch_available_flags fixture replaces
+# the module attribute — this stays the genuine function.
+from src.handlers.keyboards import fetch_available_flags as real_fetch_available_flags
 from src.handlers.messages import handle_message
 from src.settings import settings
 
