@@ -52,12 +52,14 @@ async def error_handler(update: object, context: CallbackContext) -> None:
 
 def build_application() -> Application:
     """Build the Telegram application with all handlers registered."""
-    application = (
-        ApplicationBuilder()
-        .token(settings.telegram_token)
-        .post_init(post_init)
-        .build()
-    )
+    builder = ApplicationBuilder().token(settings.telegram_token).post_init(post_init)
+    if settings.telegram_api_server:
+        # Route the Bot API through a self-hosted server where api.telegram.org is
+        # not directly reachable. PTB appends the token to base_url/base_file_url,
+        # so they must end with /bot and /file/bot respectively.
+        server = settings.telegram_api_server.rstrip("/")
+        builder = builder.base_url(f"{server}/bot").base_file_url(f"{server}/file/bot")
+    application = builder.build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("list", list_channels))
@@ -75,6 +77,7 @@ def run() -> None:
     logging.info(f"MINIFLUX_BASE_URL: {settings.miniflux_base_url}")
     logging.info(f"RSS_BRIDGE_URL: {settings.rss_bridge_url}")
     logging.info(f"ACCEPT_CHANNELS_WITHOUT_USERNAME: {settings.accept_channels_without_username}")
+    logging.info(f"TELEGRAM_API_SERVER: {settings.telegram_api_server or '(default api.telegram.org)'}")
     logging.info("----------------------------")
 
     application = build_application()

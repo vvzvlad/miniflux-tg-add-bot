@@ -17,6 +17,7 @@ services:
       - miniflux_tg_add_bot:/app/data     # all mutable state survives restart/update
     environment:
       TELEGRAM_TOKEN: XXX                 # bot token from @BotFather
+      #TELEGRAM_API_SERVER: http://internal.lc:8081   # self-hosted Bot API server root if api.telegram.org is not directly reachable
       MINIFLUX_BASE_URL: http://miniflux.example.com
       # Authenticate with either MINIFLUX_API_KEY, or MINIFLUX_USERNAME + MINIFLUX_PASSWORD
       MINIFLUX_API_KEY: XXX

@@ -10,6 +10,7 @@ from src.bot import build_application
 from src.handlers.callbacks import button_callback
 from src.handlers.commands import list_channels
 from src.handlers.messages import ParsedMessage, handle_message
+from src.settings import settings
 
 BRIDGE_URL = "http://test.rssbridge.local/rss/{channel}/test_token"
 
@@ -177,7 +178,8 @@ def test_build_application_registers_handlers():
     """build_application wires the token and registers all handlers plus the error handler."""
     with patch("src.bot.ApplicationBuilder") as mock_builder:
         mock_app = MagicMock()
-        mock_builder.return_value.token.return_value.post_init.return_value.build.return_value = mock_app
+        builder = mock_builder.return_value.token.return_value.post_init.return_value
+        builder.build.return_value = mock_app
 
         result = build_application()
 
@@ -185,3 +187,37 @@ def test_build_application_registers_handlers():
     # start, list, message and callback handlers
     assert mock_app.add_handler.call_count >= 4
     mock_app.add_error_handler.assert_called_once()
+    # With TELEGRAM_API_SERVER unset (the default), the bot keeps the public API.
+    builder.base_url.assert_not_called()
+    builder.base_file_url.assert_not_called()
+
+
+def test_build_application_uses_custom_api_server(monkeypatch):
+    """A configured TELEGRAM_API_SERVER routes the Bot API through base_url/base_file_url."""
+    monkeypatch.setattr(settings, "telegram_api_server", "http://internal.lc:8081")
+
+    with patch("src.bot.ApplicationBuilder") as mock_builder:
+        mock_app = MagicMock()
+        builder = mock_builder.return_value.token.return_value.post_init.return_value
+        builder.base_url.return_value.base_file_url.return_value.build.return_value = mock_app
+
+        result = build_application()
+
+    assert result is mock_app
+    builder.base_url.assert_called_once_with("http://internal.lc:8081/bot")
+    builder.base_url.return_value.base_file_url.assert_called_once_with("http://internal.lc:8081/file/bot")
+
+
+def test_build_application_strips_trailing_slash_from_api_server(monkeypatch):
+    """A trailing slash in TELEGRAM_API_SERVER is stripped before /bot and /file/bot are appended."""
+    monkeypatch.setattr(settings, "telegram_api_server", "http://internal.lc:8081/")
+
+    with patch("src.bot.ApplicationBuilder") as mock_builder:
+        mock_app = MagicMock()
+        builder = mock_builder.return_value.token.return_value.post_init.return_value
+        builder.base_url.return_value.base_file_url.return_value.build.return_value = mock_app
+
+        build_application()
+
+    builder.base_url.assert_called_once_with("http://internal.lc:8081/bot")
+    builder.base_url.return_value.base_file_url.assert_called_once_with("http://internal.lc:8081/file/bot")
