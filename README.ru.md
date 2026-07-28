@@ -137,6 +137,7 @@ polling-цикл не блокировался, пока запрос в пол�
 | `MINIFLUX_API_KEY` | одно из | — | API-ключ Miniflux… |
 | `MINIFLUX_USERNAME` | одно из | — | …или логин Miniflux + пароль. |
 | `MINIFLUX_PASSWORD` | одно из | — | Пароль к `MINIFLUX_USERNAME`. |
+| `MINIFLUX_TIMEOUT` | нет | `120` | Таймаут чтения (секунды) для запросов к Miniflux; подними, если подписка Telegram-каналов падает по таймауту, пока RSS-Bridge рендерит ленту. |
 | `RSS_BRIDGE_URL` | да | — | Шаблон ленты RSS-Bridge; **обязан содержать `{channel}`**, напр. `http://bridge.example.com/rss/{channel}`. |
 | `ADMIN` | да | — | Единственный Telegram-юзернейм, которому можно пользоваться ботом (сравнивается точно, без ведущего `@`). |
 | `TELEGRAM_API_SERVER` | нет | публичный API | Необязательный корень своего Telegram Bot API-сервера, когда `api.telegram.org` недоступен напрямую, напр. `http://internal.lc:8081` (бот сам дописывает `/bot` и `/file/bot`). |

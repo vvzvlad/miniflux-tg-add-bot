@@ -23,6 +23,7 @@ services:
       MINIFLUX_API_KEY: XXX
       MINIFLUX_USERNAME: XXX
       MINIFLUX_PASSWORD: XXX
+      #MINIFLUX_TIMEOUT: 120   # read timeout (s) for Miniflux API calls; raise if subscribing Telegram channels times out
       RSS_BRIDGE_URL: http://bridge.example.com/rss/{channel}  # must contain the {channel} placeholder
       ADMIN: XXX                          # the only telegram username allowed to use the bot
       ACCEPT_CHANNELS_WITHOUT_USERNAME: "false"

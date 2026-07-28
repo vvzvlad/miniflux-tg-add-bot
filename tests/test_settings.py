@@ -242,7 +242,7 @@ def test_get_client_with_api_key(monkeypatch, reset_client_cache):
         REAL_GET_CLIENT()
 
     mock_client_class.assert_called_once_with(
-        "http://miniflux.example.com", api_key="test_api_key"
+        "http://miniflux.example.com", api_key="test_api_key", timeout=120.0
     )
 
 
@@ -257,7 +257,7 @@ def test_get_client_with_username_password(monkeypatch, reset_client_cache):
         REAL_GET_CLIENT()
 
     mock_client_class.assert_called_once_with(
-        "http://miniflux.example.com", username="test_user", password="test_password"
+        "http://miniflux.example.com", username="test_user", password="test_password", timeout=120.0
     )
 
 

@@ -25,6 +25,10 @@ class Settings(BaseSettings):
 
     # Miniflux
     miniflux_base_url: str
+    # Read timeout (seconds) for Miniflux API calls. Subscribing a Telegram
+    # channel makes Miniflux fetch the RSS-Bridge feed synchronously, and the
+    # bridge's first render can exceed the library's 30s default -> raise it.
+    miniflux_timeout: float = 120.0
     miniflux_api_key: str | None = None
     miniflux_username: str | None = None
     miniflux_password: str | None = None

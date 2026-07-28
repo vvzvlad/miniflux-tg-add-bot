@@ -51,13 +51,18 @@ def get_client() -> Client:
     if _client is None:
         if settings.miniflux_api_key:
             logging.info(f"Initializing Miniflux client for {settings.miniflux_base_url} using API key.")
-            _client = miniflux.Client(settings.miniflux_base_url, api_key=settings.miniflux_api_key)
+            _client = miniflux.Client(
+                settings.miniflux_base_url,
+                api_key=settings.miniflux_api_key,
+                timeout=settings.miniflux_timeout,
+            )
         else:
             logging.info(f"Initializing Miniflux client for {settings.miniflux_base_url} using username/password.")
             _client = miniflux.Client(
                 settings.miniflux_base_url,
                 username=settings.miniflux_username,
                 password=settings.miniflux_password,
+                timeout=settings.miniflux_timeout,
             )
         logging.info("Miniflux client initialized successfully.")
     return _client

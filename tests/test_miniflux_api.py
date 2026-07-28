@@ -1,11 +1,12 @@
 """Tests for src/miniflux_api.py — the synchronous Miniflux API layer."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
 from miniflux import Client
 
+import src.miniflux_api as miniflux_api
 from src.miniflux_api import (
     _get_feeds,
     check_feed_exists,
@@ -16,6 +17,8 @@ from src.miniflux_api import (
     get_channels_by_category,
     update_feed_url,
 )
+from src.miniflux_api import get_client as real_get_client  # bound at import -> the real function
+from src.settings import settings
 
 
 # The library exceptions take a response object; these stand-ins keep the tests
@@ -471,3 +474,22 @@ def test_create_feed_passes_optional_params():
         password="feedpass",
         user_agent="TestAgent/1.0",
     )
+
+
+def test_get_client_passes_configured_timeout(monkeypatch):
+    """get_client() builds the real client with the configured read timeout.
+
+    conftest.py autouse-patches src.miniflux_api.get_client to a mock; we call the
+    function captured at import time (real_get_client) so the real construction
+    runs, and reset the module-level client cache before/after to avoid leakage.
+    """
+    miniflux_api._client = None
+    monkeypatch.setattr(settings, "miniflux_api_key", "test-key")
+    monkeypatch.setattr(settings, "miniflux_timeout", 90.0)
+    try:
+        with patch("src.miniflux_api.miniflux.Client") as MockClient:
+            real_get_client()
+        MockClient.assert_called_once()
+        assert MockClient.call_args.kwargs.get("timeout") == 90.0
+    finally:
+        miniflux_api._client = None

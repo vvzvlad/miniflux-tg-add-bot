@@ -138,6 +138,7 @@ variable — never a silent half-broken start.
 | `MINIFLUX_API_KEY` | one of | — | Miniflux API key… |
 | `MINIFLUX_USERNAME` | one of | — | …or Miniflux username + password. |
 | `MINIFLUX_PASSWORD` | one of | — | Password for `MINIFLUX_USERNAME`. |
+| `MINIFLUX_TIMEOUT` | no | `120` | Read timeout (seconds) for Miniflux API calls; raise it if subscribing Telegram channels times out while the RSS-Bridge renders the feed. |
 | `RSS_BRIDGE_URL` | yes | — | RSS-Bridge feed template; **must contain `{channel}`**, e.g. `http://bridge.example.com/rss/{channel}`. |
 | `ADMIN` | yes | — | The one Telegram username allowed to use the bot (compared exactly, without the leading `@`). |
 | `TELEGRAM_API_SERVER` | no | public API | Optional self-hosted Telegram Bot API server root, used when `api.telegram.org` is not directly reachable, e.g. `http://internal.lc:8081` (the bot appends `/bot` and `/file/bot`). |
