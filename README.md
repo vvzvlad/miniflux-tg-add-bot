@@ -194,7 +194,8 @@ call fails the test loudly. In CI, the image is only built after the tests pass.
 
 ## Deployment
 
-The image is built and pushed to `ghcr.io` by GitHub Actions on every push to `master`
+The image is built and pushed to the Gitea registry
+(`gitea.vvzvlad.xyz/projects/miniflux-tg-add-bot`) by Gitea Actions on every push to `master`
 (the test job must be green first) and is **never built on the server**. Deploy it with the
 provided [`docker-compose.yml`](docker-compose.yml):
 

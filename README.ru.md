@@ -193,7 +193,8 @@ make run        # запустить бота
 
 ## Деплой
 
-Образ собирается и пушится в `ghcr.io` через GitHub Actions на каждый пуш в `master`
+Образ собирается и пушится в реестр Gitea
+(`gitea.vvzvlad.xyz/projects/miniflux-tg-add-bot`) через Gitea Actions на каждый пуш в `master`
 (сначала должен позеленеть джоб тестов) и **никогда не собирается на сервере**. Разворачивай
 приложенным [`docker-compose.yml`](docker-compose.yml):
 

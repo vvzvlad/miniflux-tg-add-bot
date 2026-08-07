@@ -1,0 +1,47 @@
+name: Tests
+
+# Split out from image-check-publish.yml on purpose: that workflow must never
+# run on pull_request, because a PR build would push :latest and watchtower
+# would deploy it. Tests alone are safe here and are what a PR actually needs —
+# without this workflow a broken test only surfaces after the merge into master.
+on:
+  pull_request:
+    branches: [ "master" ]
+
+permissions:
+  contents: read   # checkout
+
+# Unlike the image workflow, cancelling is right here: this job produces no
+# artifacts, so a superseded test run is just wasted runner time.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.11"
+
+    - name: Install dependencies
+      run: pip install -r requirements-dev.txt
+
+    - name: Lint and type-check
+      run: |
+        ruff check .
+        mypy src
+
+    - name: Run tests
+      env:
+        # Required ENV so that importing src.settings succeeds
+        TELEGRAM_TOKEN: test-token
+        MINIFLUX_BASE_URL: http://miniflux.test
+        MINIFLUX_API_KEY: test-api-key
+        RSS_BRIDGE_URL: http://bridge.test/rss/{channel}/test-token
+        ADMIN: test_admin
+      run: pytest --tb=short -q

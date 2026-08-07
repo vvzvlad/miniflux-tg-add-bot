@@ -1,4 +1,4 @@
-# Deploy template. The image is pulled from ghcr.io and is NEVER built on prod
+# Deploy template. The image is pulled from the Gitea registry and is NEVER built on prod
 # (CI builds and pushes it; watchtower auto-updates the running container).
 # All values below are PLACEHOLDERS (XXX / example.com), not real secrets.
 #
@@ -10,7 +10,7 @@ volumes:
 
 services:
   miniflux_tg_add_bot:
-    image: ghcr.io/vvzvlad/miniflux-tg-add-bot:latest
+    image: gitea.vvzvlad.xyz/projects/miniflux-tg-add-bot:latest
     container_name: miniflux-tg-add-bot
     restart: always
     volumes:
