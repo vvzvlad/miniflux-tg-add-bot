@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     admin: str
     # Optional self-hosted Telegram Bot API server (telegram-bot-api), used where
     # api.telegram.org is not directly reachable. Set the bare server root, e.g.
-    # http://internal.lc:8081 — the bot appends /bot and /file/bot itself. Unset
+    # http://bot-api.invalid:8081 — the bot appends /bot and /file/bot itself. Unset
     # -> the public https://api.telegram.org.
     telegram_api_server: str | None = None
 

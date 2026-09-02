@@ -141,7 +141,7 @@ variable — never a silent half-broken start.
 | `MINIFLUX_TIMEOUT` | no | `120` | Read timeout (seconds) for Miniflux API calls; raise it if subscribing Telegram channels times out while the RSS-Bridge renders the feed. |
 | `RSS_BRIDGE_URL` | yes | — | RSS-Bridge feed template; **must contain `{channel}`**, e.g. `http://bridge.example.com/rss/{channel}`. |
 | `ADMIN` | yes | — | The one Telegram username allowed to use the bot (compared exactly, without the leading `@`). |
-| `TELEGRAM_API_SERVER` | no | public API | Optional self-hosted Telegram Bot API server root, used when `api.telegram.org` is not directly reachable, e.g. `http://internal.lc:8081` (the bot appends `/bot` and `/file/bot`). |
+| `TELEGRAM_API_SERVER` | no | public API | Optional self-hosted Telegram Bot API server root, used when `api.telegram.org` is not directly reachable, e.g. `http://bot-api.invalid:8081` (the bot appends `/bot` and `/file/bot`). |
 | `ACCEPT_CHANNELS_WITHOUT_USERNAME` | no | `false` | Allow subscribing channels that have no public username (the bridge must support it; RSSHub does not). |
 | `LOG_LEVEL` | no | `INFO` | Logging level. |
 
