@@ -187,14 +187,14 @@ def test_build_application_registers_handlers():
     # start, list, message and callback handlers
     assert mock_app.add_handler.call_count >= 4
     mock_app.add_error_handler.assert_called_once()
-    # With TELEGRAM_API_SERVER unset (the default), the bot keeps the public API.
+    # With TELEGRAM_BOT_API_SERVER unset (the default), the bot keeps the public API.
     builder.base_url.assert_not_called()
     builder.base_file_url.assert_not_called()
 
 
 def test_build_application_uses_custom_api_server(monkeypatch):
-    """A configured TELEGRAM_API_SERVER routes the Bot API through base_url/base_file_url."""
-    monkeypatch.setattr(settings, "telegram_api_server", "http://bot-api.invalid:8081")
+    """A configured TELEGRAM_BOT_API_SERVER routes the Bot API through base_url/base_file_url."""
+    monkeypatch.setattr(settings, "telegram_bot_api_server", "http://bot-api.invalid:8081")
 
     with patch("src.bot.ApplicationBuilder") as mock_builder:
         mock_app = MagicMock()
@@ -209,8 +209,8 @@ def test_build_application_uses_custom_api_server(monkeypatch):
 
 
 def test_build_application_strips_trailing_slash_from_api_server(monkeypatch):
-    """A trailing slash in TELEGRAM_API_SERVER is stripped before /bot and /file/bot are appended."""
-    monkeypatch.setattr(settings, "telegram_api_server", "http://bot-api.invalid:8081/")
+    """A trailing slash in TELEGRAM_BOT_API_SERVER is stripped before /bot and /file/bot are appended."""
+    monkeypatch.setattr(settings, "telegram_bot_api_server", "http://bot-api.invalid:8081/")
 
     with patch("src.bot.ApplicationBuilder") as mock_builder:
         mock_app = MagicMock()
