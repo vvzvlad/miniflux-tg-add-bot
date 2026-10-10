@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # api.telegram.org is not directly reachable. Set the bare server root, e.g.
     # http://bot-api.invalid:8081 — the bot appends /bot and /file/bot itself. Unset
     # -> the public https://api.telegram.org.
-    telegram_api_server: str | None = None
+    telegram_bot_api_server: str | None = None
 
     # Miniflux
     miniflux_base_url: str
