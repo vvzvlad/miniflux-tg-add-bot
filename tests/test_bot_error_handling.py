@@ -1,7 +1,4 @@
-"""Error handling across the handlers: every failure must reach the user as a reply.
-
-(The channel_management import this file used to carry is gone with the module.)
-"""
+"""Error handling across the handlers: every failure must reach the user as a reply."""
 
 from unittest.mock import AsyncMock, patch
 
