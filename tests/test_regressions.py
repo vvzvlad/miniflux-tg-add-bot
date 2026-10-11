@@ -1,8 +1,4 @@
-"""Regression tests for the 14 bugs fixed in the restructuring.
-
-Each test here is the proof that a specific "glitch" is gone. They are written to
-fail loudly if the corresponding bug is reintroduced.
-"""
+"""Regression tests: each test pins down behaviour that once broke."""
 
 import warnings
 from unittest.mock import AsyncMock, MagicMock, patch

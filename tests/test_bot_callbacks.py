@@ -1,8 +1,4 @@
-"""Error handling inside src/handlers/callbacks.py::button_callback.
-
-(The channel_management tests that used to live here are gone with the module: it
-was dead code — never imported by the bot, and its SQLite tables were never created.)
-"""
+"""Error handling inside src/handlers/callbacks.py::button_callback."""
 
 from unittest.mock import patch
 

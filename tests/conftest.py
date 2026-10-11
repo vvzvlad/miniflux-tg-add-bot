@@ -37,9 +37,8 @@ def mock_miniflux_client():
     """A **synchronous** mock of the Miniflux client.
 
     Every method is a plain MagicMock, never an AsyncMock: `miniflux.Client` is a
-    synchronous library. Mocking its methods as AsyncMock used to hide a real bug
-    (`await client.delete_feed(...)` in production code) — with a MagicMock such a
-    stray `await` raises TypeError and the test fails loudly, which is the point.
+    synchronous library, and with a MagicMock a stray `await client.<method>(...)`
+    raises TypeError and fails the test.
     """
     client = MagicMock()
     client.get_feeds = MagicMock(return_value=[])
@@ -55,8 +54,8 @@ def mock_miniflux_client():
 def patch_get_client(mock_miniflux_client):
     """Hand the mock client to every module that resolves it via get_client().
 
-    The client is no longer a module global: handlers call get_client() at call
-    time, so it must be patched in each module where the name is used.
+    Handlers call get_client() at call time, so it must be patched in each module
+    where the name is used.
     """
     targets = [
         "src.miniflux_api.get_client",
